@@ -10,6 +10,8 @@
 
 # Test binary, built with `go test -c`
 *.test
+*.log
+*.ini
 
 # Code coverage profiles and other test artifacts
 *.out
@@ -17,8 +19,8 @@ coverage.*
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# Build output (see build.sh: dist/<os>/xray-cli-<arch>)
+dist/
 
 # Go workspace file
 go.work
@@ -27,6 +29,17 @@ go.work.sum
 # env file
 .env
 
+# Real VPN configs - secrets, never commit
+servers.yaml
+*.servers.yaml
+server.txt
+*.server.txt
+
 # Editor/IDE
-# .idea/
+.idea/
+.zed/
 # .vscode/
+.DS_Store
+
+config.yaml
+*config.yaml
