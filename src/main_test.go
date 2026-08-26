@@ -20,13 +20,16 @@ func TestHumanBytes(t *testing.T) {
 		want string
 	}{
 		{0, "0 B"},
+		{1, "1 B"},
 		{512, "512 B"},
 		{1023, "1023 B"},
 		{1024, "1.00 KiB"},
 		{1536, "1.50 KiB"},
+		{10240, "10.00 KiB"},
 		{1024 * 1024, "1.00 MiB"},
 		{1.5 * 1024 * 1024, "1.50 MiB"},
 		{1024 * 1024 * 1024, "1.00 GiB"},
+		{2.5 * 1024 * 1024 * 1024, "2.50 GiB"},
 	}
 	for _, c := range cases {
 		got := humanBytes(c.in)
@@ -36,34 +39,68 @@ func TestHumanBytes(t *testing.T) {
 	}
 }
 
-// ── backoff ───────────────────────────────────────────────────────────────────
+func TestHumanBytes_Negative(t *testing.T) {
+	got := humanBytes(-1)
+	if got != "-1 B" {
+		t.Errorf("humanBytes(-1) = %q, want \"-1 B\"", got)
+	}
+}
+
+// ── backoffDuration ──────────────────────────────────────────────────────────
 
 func TestBackoff_Exponential(t *testing.T) {
 	init := time.Second
 	max := 60 * time.Second
 
-	if got := backoff(1, init, max); got != time.Second {
-		t.Errorf("attempt 1: got %v, want 1s", got)
+	cases := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{1, 1 * time.Second},
+		{2, 2 * time.Second},
+		{3, 4 * time.Second},
+		{4, 8 * time.Second},
+		{5, 16 * time.Second},
+		{6, 32 * time.Second},
+		{7, 60 * time.Second}, // capped
 	}
-	if got := backoff(2, init, max); got != 2*time.Second {
-		t.Errorf("attempt 2: got %v, want 2s", got)
-	}
-	if got := backoff(3, init, max); got != 4*time.Second {
-		t.Errorf("attempt 3: got %v, want 4s", got)
+	for _, c := range cases {
+		got := backoffDuration(c.attempt, init, max)
+		if got != c.want {
+			t.Errorf("backoffDuration(%d, 1s, 60s) = %v, want %v", c.attempt, got, c.want)
+		}
 	}
 }
 
 func TestBackoff_CapsAtMax(t *testing.T) {
-	got := backoff(100, time.Second, 30*time.Second)
+	got := backoffDuration(100, time.Second, 30*time.Second)
 	if got != 30*time.Second {
 		t.Errorf("got %v, want 30s cap", got)
 	}
 }
 
 func TestBackoff_MaxEqualInitial(t *testing.T) {
-	got := backoff(1, 5*time.Second, 5*time.Second)
+	got := backoffDuration(1, 5*time.Second, 5*time.Second)
 	if got != 5*time.Second {
 		t.Errorf("got %v", got)
+	}
+}
+
+func TestBackoff_LargeAttemptNoPanic(t *testing.T) {
+	got := backoffDuration(1000, time.Second, time.Minute)
+	if got != time.Minute {
+		t.Errorf("got %v, want 1m cap", got)
+	}
+}
+
+func TestBackoff_SmallIntervals(t *testing.T) {
+	got := backoffDuration(1, 100*time.Millisecond, 500*time.Millisecond)
+	if got != 100*time.Millisecond {
+		t.Errorf("got %v, want 100ms", got)
+	}
+	got = backoffDuration(3, 100*time.Millisecond, 500*time.Millisecond)
+	if got != 400*time.Millisecond {
+		t.Errorf("got %v, want 400ms", got)
 	}
 }
 
@@ -87,13 +124,22 @@ func TestBuildLogger_Debug(t *testing.T) {
 	}
 }
 
+func TestBuildLogger_UnknownDefaultsToInfo(t *testing.T) {
+	l := buildLogger("garbage")
+	if l == nil {
+		t.Fatal("buildLogger returned nil")
+	}
+}
+
 // ── status server ─────────────────────────────────────────────────────────────
 
 func TestStatusServer_Health_Connected(t *testing.T) {
 	s := &state{}
 	s.connected.Store(true)
 	addr := freeAddr(t)
-	startStatusServer(addr, s)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startStatusServer(ctx, addr, s)
 	waitReady(t, addr)
 
 	resp, err := http.Get("http://" + addr + "/health")
@@ -114,7 +160,9 @@ func TestStatusServer_Health_Disconnected(t *testing.T) {
 	s := &state{}
 	s.connected.Store(false)
 	addr := freeAddr(t)
-	startStatusServer(addr, s)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startStatusServer(ctx, addr, s)
 	waitReady(t, addr)
 
 	resp, err := http.Get("http://" + addr + "/health")
@@ -125,6 +173,10 @@ func TestStatusServer_Health_Disconnected(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
 	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "disconnected") {
+		t.Errorf("body = %q, want 'disconnected'", body)
+	}
 }
 
 func TestStatusServer_Status_JSON(t *testing.T) {
@@ -134,7 +186,9 @@ func TestStatusServer_Status_JSON(t *testing.T) {
 	s.bytesOut.Store(5678)
 	s.reconnects.Store(2)
 	addr := freeAddr(t)
-	startStatusServer(addr, s)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startStatusServer(ctx, addr, s)
 	waitReady(t, addr)
 
 	resp, err := http.Get("http://" + addr + "/status")
@@ -159,13 +213,66 @@ func TestStatusServer_Status_JSON(t *testing.T) {
 	if got["reconnects"].(float64) != 2 {
 		t.Errorf("reconnects = %v, want 2", got["reconnects"])
 	}
+	if _, ok := got["uptime_s"]; !ok {
+		t.Error("missing uptime_s field")
+	}
+}
+
+func TestStatusServer_Status_ContentType(t *testing.T) {
+	s := &state{startAt: time.Now()}
+	addr := freeAddr(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startStatusServer(ctx, addr, s)
+	waitReady(t, addr)
+
+	resp, err := http.Get("http://" + addr + "/status")
+	if err != nil {
+		t.Fatalf("GET /status: %v", err)
+	}
+	defer resp.Body.Close()
+
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+}
+
+func TestStatusServer_Shutdown(t *testing.T) {
+	s := &state{}
+	addr := freeAddr(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	startStatusServer(ctx, addr, s)
+	waitReady(t, addr)
+
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	_, err := http.Get("http://" + addr + "/health")
+	if err == nil {
+		t.Error("expected error after shutdown")
+	}
+}
+
+func TestStatusServer_UnknownPath(t *testing.T) {
+	s := &state{}
+	addr := freeAddr(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startStatusServer(ctx, addr, s)
+	waitReady(t, addr)
+
+	resp, err := http.Get("http://" + addr + "/nonexistent")
+	if err != nil {
+		t.Fatalf("GET /nonexistent: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
 }
 
 // ── runWithReconnect ──────────────────────────────────────────────────────────
-
-// runWithReconnect calls NewClientWithOpts internally which requires real
-// system access (gateway, TUN). We test the state transitions and backoff
-// behaviour by injecting failures via maxAttempts.
 
 func TestRunWithReconnect_StopsOnContextCancel(t *testing.T) {
 	s := &state{startAt: time.Now()}
@@ -173,7 +280,7 @@ func TestRunWithReconnect_StopsOnContextCancel(t *testing.T) {
 	profile := Profile{Name: "test", Link: "vless://invalid"}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately so the loop exits before attempting a real dial
+	cancel()
 
 	done := make(chan struct{})
 	go func() {
@@ -191,7 +298,6 @@ func TestRunWithReconnect_StopsOnContextCancel(t *testing.T) {
 func TestRunWithReconnect_MaxAttemptsRespected(t *testing.T) {
 	s := &state{startAt: time.Now()}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	// invalid link → connect always fails
 	profile := Profile{Name: "test", Link: "vless://invalid-host-that-does-not-exist"}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -199,8 +305,6 @@ func TestRunWithReconnect_MaxAttemptsRespected(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		// maxAttempts=1 means one failure then give up — no real backoff wait
-		// because context also cancels it early.
 		runWithReconnect(ctx, logger, s, profile, 1)
 		close(done)
 	}()
@@ -212,6 +316,31 @@ func TestRunWithReconnect_MaxAttemptsRespected(t *testing.T) {
 	}
 }
 
+func TestRunWithReconnect_ReconnectCountIncremented(t *testing.T) {
+	s := &state{startAt: time.Now()}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	profile := Profile{Name: "test", Link: "vless://invalid"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		runWithReconnect(ctx, logger, s, profile, 2)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runWithReconnect timed out")
+	}
+
+	if s.reconnects.Load() < 1 {
+		t.Error("expected at least 1 reconnect attempt")
+	}
+}
+
 // ── state atomic fields ───────────────────────────────────────────────────────
 
 func TestState_AtomicFields(t *testing.T) {
@@ -220,6 +349,10 @@ func TestState_AtomicFields(t *testing.T) {
 	s.connected.Store(true)
 	if !s.connected.Load() {
 		t.Error("connected should be true")
+	}
+	s.connected.Store(false)
+	if s.connected.Load() {
+		t.Error("connected should be false")
 	}
 
 	s.bytesIn.Store(999)
@@ -238,9 +371,10 @@ func TestState_AtomicFields(t *testing.T) {
 		t.Error("reconnects should be 2")
 	}
 
-	p := &Profile{Name: "x"}
+	p := &Profile{Name: "x", Link: "vless://x"}
 	s.activeProfile.Store(p)
-	if s.activeProfile.Load().Name != "x" {
+	loaded := s.activeProfile.Load()
+	if loaded == nil || loaded.Name != "x" {
 		t.Error("activeProfile mismatch")
 	}
 
@@ -251,6 +385,25 @@ func TestState_AtomicFields(t *testing.T) {
 	}
 }
 
+func TestState_ZeroValue(t *testing.T) {
+	s := &state{}
+	if s.connected.Load() {
+		t.Error("zero state connected should be false")
+	}
+	if s.bytesIn.Load() != 0 {
+		t.Error("zero state bytesIn should be 0")
+	}
+	if s.reconnects.Load() != 0 {
+		t.Error("zero state reconnects should be 0")
+	}
+	if s.activeProfile.Load() != nil {
+		t.Error("zero state activeProfile should be nil")
+	}
+	if s.connectedAt.Load() != 0 {
+		t.Error("zero state connectedAt should be 0")
+	}
+}
+
 // ── tray_darwin helpers ───────────────────────────────────────────────────────
 
 func TestFormatDuration(t *testing.T) {
@@ -258,10 +411,17 @@ func TestFormatDuration(t *testing.T) {
 		d    time.Duration
 		want string
 	}{
-		{5 * time.Second, "5s"},
-		{65 * time.Second, "1m 05s"},
-		{3661 * time.Second, "1h 01m 01s"},
 		{0, "0s"},
+		{1 * time.Second, "1s"},
+		{5 * time.Second, "5s"},
+		{59 * time.Second, "59s"},
+		{60 * time.Second, "1m 00s"},
+		{65 * time.Second, "1m 05s"},
+		{600 * time.Second, "10m 00s"},
+		{3600 * time.Second, "1h 00m 00s"},
+		{3661 * time.Second, "1h 01m 01s"},
+		{7200 * time.Second, "2h 00m 00s"},
+		{86400 * time.Second, "24h 00m 00s"},
 	}
 	for _, c := range cases {
 		got := formatDuration(c.d)
@@ -277,6 +437,9 @@ func TestCircleIcon_ReturnsPNG(t *testing.T) {
 		if len(icon) == 0 {
 			t.Errorf("circleIcon(%v) returned empty slice", filled)
 		}
+		if len(icon) < 8 {
+			t.Fatalf("circleIcon(%v) too short for PNG header", filled)
+		}
 		// PNG magic bytes
 		if icon[0] != 0x89 || icon[1] != 0x50 || icon[2] != 0x4E || icon[3] != 0x47 {
 			t.Errorf("circleIcon(%v) does not start with PNG magic bytes", filled)
@@ -289,6 +452,22 @@ func TestIconConnDisc_AreDifferent(t *testing.T) {
 	disc := iconDisc()
 	if string(conn) == string(disc) {
 		t.Error("connected and disconnected icons should be different")
+	}
+}
+
+func TestIconConn_Cached(t *testing.T) {
+	a := iconConn()
+	b := iconConn()
+	if &a[0] != &b[0] {
+		t.Error("iconConn should return the same cached slice")
+	}
+}
+
+func TestIconDisc_Cached(t *testing.T) {
+	a := iconDisc()
+	b := iconDisc()
+	if &a[0] != &b[0] {
+		t.Error("iconDisc should return the same cached slice")
 	}
 }
 

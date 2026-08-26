@@ -157,7 +157,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 				}
 				vpnCancel()
 
-				timeoutCtx, cancel := context.WithTimeout(ctx, stopTimeout)
+				timeoutCtx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 				defer cancel()
 				select {
 				case <-done:
@@ -330,10 +330,10 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 		}
 
 		go func() {
+			defer systray.Quit()
 			for {
 				select {
 				case <-ctx.Done():
-					systray.Quit()
 					return
 				case <-mConnect.ClickedCh:
 					if cp := currentProfile.Load(); cp != nil {
@@ -353,7 +353,6 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 					go showAbout(s)
 				case <-mQuit.ClickedCh:
 					rootCancel()
-					systray.Quit()
 					return
 				}
 			}

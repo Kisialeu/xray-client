@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -18,8 +19,9 @@ type Profile struct {
 
 // configFile is the YAML schema.
 type configFile struct {
-	Default  string    `yaml:"default"`
-	Profiles []Profile `yaml:"profiles"`
+	Default      string    `yaml:"default"`
+	Subscription string    `yaml:"subscription"`
+	Profiles     []Profile `yaml:"profiles"`
 }
 
 func isYAML(path string) bool {
@@ -46,13 +48,12 @@ func parseYAMLConfig(path string) (configFile, error) {
 //     a profile by name (falls back to "default" field, then first entry).
 //   - flagLink / XRAY_LINK env always wins over file content.
 func loadLink(path, profileName, flagLink string) (Profile, error) {
-	// CLI / env takes priority.
 	if flagLink != "" {
 		return Profile{Link: flagLink}, nil
 	}
 
 	if path == "" {
-		return Profile{}, fmt.Errorf("no link provided: use --link, --config, or set XRAY_LINK")
+		return Profile{}, fmt.Errorf("no link provided: use --link, --config, --subscribe, or set XRAY_LINK")
 	}
 
 	switch {
@@ -61,12 +62,25 @@ func loadLink(path, profileName, flagLink string) (Profile, error) {
 	case isYAML(path):
 		return loadYAML(path, profileName)
 	default:
-		// Try txt first, then yaml.
 		if p, err := loadTXT(path); err == nil {
 			return p, nil
 		}
 		return loadYAML(path, profileName)
 	}
+}
+
+func loadSubscriptionProfiles(subURL, profileName string, logger *slog.Logger) (Profile, []Profile, error) {
+	profiles, err := fetchSubscription(logger, subURL)
+	if err != nil {
+		return Profile{}, nil, err
+	}
+
+	selected, err := selectProfile(profiles, profileName, "")
+	if err != nil {
+		return Profile{}, nil, fmt.Errorf("%w in subscription", err)
+	}
+	logger.Info("subscription profile selected", "name", selected.Name, "total", len(profiles))
+	return selected, profiles, nil
 }
 
 // loadTXT reads the first non-empty, non-comment line as the connection link.
@@ -89,6 +103,7 @@ func loadTXT(path string) (Profile, error) {
 }
 
 // loadYAML parses a multi-profile YAML and picks the requested profile.
+// Inline profiles only — does not fetch subscriptions.
 func loadYAML(path, profileName string) (Profile, error) {
 	cfg, err := parseYAMLConfig(path)
 	if err != nil {
@@ -97,24 +112,68 @@ func loadYAML(path, profileName string) (Profile, error) {
 	if len(cfg.Profiles) == 0 {
 		return Profile{}, fmt.Errorf("%s: no profiles defined", path)
 	}
+	return selectProfile(cfg.Profiles, profileName, cfg.Default)
+}
 
-	want := profileName
+// loadYAMLAll parses a YAML config file, fetches the subscription URL if
+// present, merges all profiles, and returns the selected profile along with
+// the full profile list. Subscription is fetched at most once.
+func loadYAMLAll(path, profileName string, logger *slog.Logger) (Profile, []Profile, error) {
+	cfg, err := parseYAMLConfig(path)
+	if err != nil {
+		return Profile{}, nil, err
+	}
+
+	profiles := cfg.Profiles
+	logger.Debug("config loaded", "path", path, "inline_profiles", len(profiles), "has_subscription", cfg.Subscription != "")
+
+	if cfg.Subscription != "" {
+		sub, subErr := fetchSubscription(logger, cfg.Subscription)
+		if subErr != nil {
+			if len(profiles) == 0 {
+				return Profile{}, nil, fmt.Errorf("subscription fetch failed and no inline profiles: %w", subErr)
+			}
+			logger.Warn("subscription fetch failed, using inline profiles only", "err", subErr)
+		} else {
+			before := len(profiles)
+			profiles = mergeProfiles(profiles, sub)
+			logger.Info("profiles merged", "inline", before, "subscription", len(sub), "total", len(profiles))
+		}
+	}
+
+	if len(profiles) == 0 {
+		return Profile{}, nil, fmt.Errorf("%s: no profiles defined", path)
+	}
+
+	selected, err := selectProfile(profiles, profileName, cfg.Default)
+	if err != nil {
+		return Profile{}, nil, fmt.Errorf("%w in %s", err, path)
+	}
+	logger.Info("profile selected", "name", selected.Name, "total", len(profiles))
+	return selected, profiles, nil
+}
+
+func selectProfile(profiles []Profile, name, defaultName string) (Profile, error) {
+	if len(profiles) == 0 {
+		return Profile{}, fmt.Errorf("no profiles defined")
+	}
+	want := name
 	if want == "" {
-		want = cfg.Default
+		want = defaultName
 	}
 	if want == "" {
-		return cfg.Profiles[0], nil
+		return profiles[0], nil
 	}
-
-	for _, p := range cfg.Profiles {
+	for _, p := range profiles {
 		if p.Name == want {
 			return p, nil
 		}
 	}
-	return Profile{}, fmt.Errorf("profile %q not found in %s", want, path)
+	return Profile{}, fmt.Errorf("profile %q not found", want)
 }
 
 // loadAllProfiles returns all profiles from a YAML config file, or nil on error/non-YAML.
+// Inline profiles only — does not fetch subscriptions.
 func loadAllProfiles(path string) ([]Profile, error) {
 	if path == "" || !isYAML(path) {
 		return nil, nil
@@ -126,22 +185,68 @@ func loadAllProfiles(path string) ([]Profile, error) {
 	return cfg.Profiles, nil
 }
 
-// listProfiles prints available profiles from a YAML config file.
-func listProfiles(path string) error {
+// mergeProfiles combines inline and subscription profiles. Inline profiles
+// come first; subscription profiles are appended, skipping any whose name
+// or link already exists in the inline set.
+func mergeProfiles(inline, sub []Profile) []Profile {
+	seenName := make(map[string]bool, len(inline))
+	seenLink := make(map[string]bool, len(inline))
+	for _, p := range inline {
+		if p.Name != "" {
+			seenName[p.Name] = true
+		}
+		seenLink[p.Link] = true
+	}
+	merged := make([]Profile, len(inline))
+	copy(merged, inline)
+	for _, p := range sub {
+		if seenLink[p.Link] {
+			continue
+		}
+		if p.Name != "" && seenName[p.Name] {
+			continue
+		}
+		merged = append(merged, p)
+		if p.Name != "" {
+			seenName[p.Name] = true
+		}
+		seenLink[p.Link] = true
+	}
+	return merged
+}
+
+// listProfiles prints available profiles from a YAML config file,
+// including subscription profiles if a subscription URL is configured.
+func listProfiles(path string, logger *slog.Logger) error {
 	cfg, err := parseYAMLConfig(path)
 	if err != nil {
 		return err
 	}
-	if len(cfg.Profiles) == 0 {
+
+	profiles := cfg.Profiles
+	if cfg.Subscription != "" {
+		sub, subErr := fetchSubscription(logger, cfg.Subscription)
+		if subErr != nil {
+			logger.Warn("subscription fetch failed", "err", subErr)
+		} else {
+			profiles = mergeProfiles(profiles, sub)
+		}
+	}
+
+	if len(profiles) == 0 {
 		fmt.Println("no profiles found")
 		return nil
 	}
-	for _, p := range cfg.Profiles {
+	for _, p := range profiles {
 		marker := "  "
 		if p.Name == cfg.Default {
 			marker = "* "
 		}
-		fmt.Printf("%s%s\n", marker, p.Name)
+		name := p.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		fmt.Printf("%s%s\n", marker, name)
 	}
 	return nil
 }

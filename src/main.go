@@ -47,7 +47,7 @@ type state struct {
 
 // ── status server (opt-in, --status) ─────────────────────────────────────────
 
-func startStatusServer(addr string, s *state) {
+func startStatusServer(ctx context.Context, addr string, s *state) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		if s.connected.Load() {
@@ -74,6 +74,12 @@ func startStatusServer(addr string, s *state) {
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
 	go func() { _ = srv.ListenAndServe() }()
 }
 
@@ -128,28 +134,31 @@ func runWithReconnect(
 	maxAttempts int,
 ) {
 	attempt := 0
+	var vpn *Client
 	for {
-		vpn, err := NewClientWithOpts(Config{
-			TLSAllowInsecure: profile.TLSInsecure,
-			Logger:           logger,
-		})
-		if err == nil {
-			err = vpn.Connect(profile.Link)
+		if vpn == nil {
+			var err error
+			vpn, err = NewClientWithOpts(Config{
+				TLSAllowInsecure: profile.TLSInsecure,
+				Logger:           logger,
+			})
+			if err != nil {
+				logger.Error("create client failed", "attempt", attempt+1, "err", err)
+				goto backoff
+			}
 		}
 
-		if err != nil {
+		if err := vpn.Connect(profile.Link); err != nil {
 			logger.Error("connect failed", "attempt", attempt+1, "err", err)
 		} else {
 			s.connected.Store(true)
 			s.connectedAt.Store(time.Now().UnixNano())
 			s.activeProfile.Store(&profile)
-			// Reset session counters on each fresh connection.
 			s.bytesIn.Store(0)
 			s.bytesOut.Store(0)
-			attempt = 0 // a successful connect resets the failure count
+			attempt = 0
 			logger.Info("tunnel up", "profile", profile.Name)
 
-			// Single goroutine to sync metrics every metricsInterval.
 			metricsDone := make(chan struct{})
 			go func() {
 				defer close(metricsDone)
@@ -169,9 +178,7 @@ func runWithReconnect(
 			tunnelDone := vpn.TunnelDone()
 			select {
 			case <-ctx.Done():
-				// Intentional shutdown.
 			case tunnelErr := <-tunnelDone:
-				// Tunnel pipe died mid-session — trigger reconnect.
 				if tunnelErr != nil {
 					logger.Error("tunnel dropped", "err", tunnelErr)
 				}
@@ -188,30 +195,31 @@ func runWithReconnect(
 			if ctx.Err() != nil {
 				return
 			}
-			// Fall through to reconnect if the tunnel dropped unexpectedly.
 		}
 
+	backoff:
 		attempt++
 		if maxAttempts > 0 && attempt >= maxAttempts {
 			logger.Error("max reconnect attempts reached", "attempts", attempt)
 			return
 		}
 
-		delay := backoff(attempt, defaultReconnectInitial, defaultReconnectMax)
+		delay := backoffDuration(attempt, defaultReconnectInitial, defaultReconnectMax)
 		logger.Info("reconnecting", "in", delay, "attempt", attempt)
 		s.reconnects.Add(1)
 
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-time.After(delay):
+		case <-timer.C:
 		}
 	}
 }
 
-func backoff(attempt int, initial, maxDur time.Duration) time.Duration {
+func backoffDuration(attempt int, initial, maxDur time.Duration) time.Duration {
 	exp := math.Pow(2, float64(attempt-1))
-	// Guard against float64 overflow into negative time.Duration.
 	if exp > float64(maxDur/initial) {
 		return maxDur
 	}
@@ -230,10 +238,11 @@ USAGE
   xray-cli [flags]
 
 CONNECTION (pick one)
-  --link   <url>    XRay link directly  (vless://, vmess://, trojan://, …)
-  --config <file>   Config file:
-                      .txt  — first non-comment line is the link
-                      .yaml — multi-profile (see below)
+  --link      <url>   XRay link directly  (vless://, vmess://, trojan://, …)
+  --config    <file>  Config file:
+                        .txt  — first non-comment line is the link
+                        .yaml — multi-profile (see below)
+  --subscribe <url>   Subscription URL (base64-encoded link list)
   XRAY_LINK env var is also accepted instead of --link
 
 PROFILE SELECTION (YAML config only)
@@ -252,9 +261,10 @@ FLAGS
   --help            Show this help
 
 YAML CONFIG FORMAT
+  subscription: "https://sub.example.com/token"  # optional
   default: home          # optional default profile name
 
-  profiles:
+  profiles:              # inline profiles (override subscription on name clash)
     - name: home
       link: "vless://..."
     - name: work
@@ -270,6 +280,8 @@ EXAMPLES
   xray-cli --config servers.yaml --profile work
   xray-cli --config servers.yaml --list-profiles
   xray-cli --config link.txt --status 127.0.0.1:9999 --verbose
+  xray-cli --subscribe "https://sub.example.com/token"
+  xray-cli --subscribe "https://sub.example.com/token" --profile "US server"
   xray-cli --link "vless://..." --tray          # macOS only
 `
 
@@ -280,7 +292,8 @@ func main() {
 	fs.Usage = func() { fmt.Print(helpText) }
 
 	link := fs.String("link", "", "")
-	configFile := fs.String("config", "", "")
+	configPath := fs.String("config", "", "")
+	subscribeURL := fs.String("subscribe", "", "")
 	profileName := fs.String("profile", "", "")
 	doListProfiles := fs.Bool("list-profiles", false, "")
 	statusAddr := fs.String("status", "", "")
@@ -302,48 +315,87 @@ func main() {
 
 	warnIfNotRoot(*tray)
 
-	// Env fallback for link.
+	logger := buildLogger(*logLevel)
+
 	if *link == "" {
 		*link = strings.TrimSpace(os.Getenv("XRAY_LINK"))
 	}
 
-	// No connection source given at all, and not asking to list profiles:
-	// fall back to a native macOS file picker rather than immediately
-	// erroring out. On non-darwin this is a no-op (PickConfigFile returns
-	// ""), so behavior there is unchanged from before — straight to the
-	// existing error path below.
-	if *link == "" && *configFile == "" && !*doListProfiles {
+	if *link == "" && *configPath == "" && *subscribeURL == "" && !*doListProfiles {
 		if picked := PickConfigFile(); picked != "" {
-			*configFile = picked
+			*configPath = picked
 		}
 	}
 
-	// --list-profiles needs a config file but no link.
 	if *doListProfiles {
-		if *configFile == "" {
-			fmt.Fprintln(os.Stderr, "error: --list-profiles requires --config")
-			os.Exit(1)
-		}
-		if err := listProfiles(*configFile); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+		switch {
+		case *subscribeURL != "":
+			profiles, err := fetchSubscription(logger, *subscribeURL)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			for _, p := range profiles {
+				name := p.Name
+				if name == "" {
+					name = "(unnamed)"
+				}
+				fmt.Printf("  %s\n", name)
+			}
+		case *configPath != "":
+			if err := listProfiles(*configPath, logger); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		default:
+			fmt.Fprintln(os.Stderr, "error: --list-profiles requires --config or --subscribe")
 			os.Exit(1)
 		}
 		return
 	}
 
-	profile, err := loadLink(*configFile, *profileName, *link)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		fmt.Fprintln(os.Stderr, "Run with --help for usage.")
-		os.Exit(1)
+	var (
+		profile     Profile
+		allProfiles []Profile
+	)
+
+	switch {
+	case *subscribeURL != "":
+		p, all, err := loadSubscriptionProfiles(*subscribeURL, *profileName, logger)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, "Run with --help for usage.")
+			os.Exit(1)
+		}
+		profile = p
+		allProfiles = all
+
+	case *configPath != "" && isYAML(*configPath):
+		p, all, err := loadYAMLAll(*configPath, *profileName, logger)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, "Run with --help for usage.")
+			os.Exit(1)
+		}
+		profile = p
+		allProfiles = all
+
+	default:
+		p, err := loadLink(*configPath, *profileName, *link)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, "Run with --help for usage.")
+			os.Exit(1)
+		}
+		profile = p
 	}
 
-	// CLI --tls-insecure overrides file value.
 	if *tlsInsecure {
 		profile.TLSInsecure = true
+		for i := range allProfiles {
+			allProfiles[i].TLSInsecure = true
+		}
 	}
-
-	logger := buildLogger(*logLevel)
 
 	s := &state{link: profile.Link, startAt: time.Now()}
 
@@ -351,12 +403,11 @@ func main() {
 	defer stop()
 
 	if *statusAddr != "" {
-		startStatusServer(*statusAddr, s)
+		startStatusServer(ctx, *statusAddr, s)
 		logger.Info("status server listening", "addr", *statusAddr)
 	}
 
 	if *tray {
-		allProfiles, _ := loadAllProfiles(*configFile)
 		if len(allProfiles) == 0 {
 			allProfiles = []Profile{profile}
 		}
