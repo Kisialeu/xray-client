@@ -43,3 +43,6 @@ server.txt
 
 config.yaml
 *config.yaml
+
+# Install script (contains local paths)
+install-macos.sh
