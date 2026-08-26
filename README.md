@@ -187,24 +187,18 @@ The tray client gets profiles and status from the daemon's API — no config fil
 
 ```bash
 ./build.sh
-sudo ./install-macos.sh              # uses servers.yaml by default
-sudo ./install-macos.sh myconfig.yaml  # or specify a config
+sudo ./setup-macos.sh install              # uses servers.yaml by default
+sudo ./setup-macos.sh install myconfig.yaml  # or specify a config
 ```
 
 This installs a LaunchDaemon (root, headless) and a LaunchAgent (user, tray icon). Both start on boot/login and auto-restart on crash.
 
 ```bash
-# Check status
-sudo launchctl list | grep xray
-launchctl list | grep xray
-
-# Logs
-tail -f /var/log/xray-cli.log       # daemon
-tail -f /tmp/xray-cli-tray.log      # tray
-
-# Stop
-sudo launchctl unload /Library/LaunchDaemons/com.xray-cli.plist
-launchctl unload ~/Library/LaunchAgents/com.xray-cli.tray.plist
+sudo ./setup-macos.sh status     # check services and resource usage
+sudo ./setup-macos.sh stop       # stop services
+sudo ./setup-macos.sh start      # start services
+sudo ./setup-macos.sh restart    # restart services
+sudo ./setup-macos.sh uninstall  # remove everything
 ```
 
 ---
