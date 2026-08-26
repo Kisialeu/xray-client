@@ -1,10 +1,14 @@
 package main
 
 import (
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // ── loadTXT ───────────────────────────────────────────────────────────────────
 
@@ -238,20 +242,20 @@ func TestListProfiles_PrintsNames(t *testing.T) {
 	yaml := "default: b\nprofiles:\n  - name: a\n    link: \"vless://a\"\n  - name: b\n    link: \"vless://b\"\n"
 	f := writeTmp(t, "cfg.yaml", yaml)
 	// Just ensure no error — output goes to stdout.
-	if err := listProfiles(f); err != nil {
+	if err := listProfiles(f, testLogger); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestListProfiles_Empty(t *testing.T) {
 	f := writeTmp(t, "cfg.yaml", "profiles: []\n")
-	if err := listProfiles(f); err != nil {
+	if err := listProfiles(f, testLogger); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestListProfiles_NotFound(t *testing.T) {
-	if err := listProfiles("/no/such/file.yaml"); err == nil {
+	if err := listProfiles("/no/such/file.yaml", testLogger); err == nil {
 		t.Fatal("expected error for missing file")
 	}
 }

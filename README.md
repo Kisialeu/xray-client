@@ -4,7 +4,8 @@ XRay VPN client in Go.
 
 **Features:**
 - Auto-reconnect with exponential backoff (2 s → 60 s, capped, configurable attempt limit) — triggers on both initial connect failures **and** mid-session tunnel drops
-- Multi-profile config support (`.yaml` with named profiles, or a plain `.txt` link file)
+- Subscription URL support — fetch profiles from a remote base64-encoded subscription endpoint (compatible with v2rayNG, Shadowrocket, etc.)
+- Multi-profile config support (`.yaml` with named profiles, subscription URL, or a plain `.txt` link file)
 - macOS menu bar app (`--tray`) — icon changes on connect/disconnect, live ↓RX/↑TX in menu, profile switching from the menu
 - HTTP status server — `/health` (Docker-friendly) and `/status` (JSON metrics)
 - Bandwidth display — ↓RX/↑TX rate + totals every 10 s (`--verbose`)
@@ -64,8 +65,9 @@ GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o xray-cli-dar
 |------|---------|-------------|
 | `--link` | — | XRay connection link (`vless://…`, `vmess://…`, `trojan://…`, …) |
 | `--config` | — | Config file: `.txt` (first non-comment line is the link) or `.yaml` (multi-profile) |
-| `--profile` | — | Named profile to use from a `.yaml` config (default: the file's `default:` key, else first entry) |
-| `--list-profiles` | `false` | Print available profiles from `--config` and exit |
+| `--subscribe` | — | Subscription URL — fetches a base64-encoded list of proxy links |
+| `--profile` | — | Named profile to use from a `.yaml` config or subscription (default: `default:` key, else first entry) |
+| `--list-profiles` | `false` | Print available profiles from `--config` or `--subscribe` and exit |
 | `--status` | `""` (disabled) | HTTP status server bind address, e.g. `127.0.0.1:9999` |
 | `--verbose` | `false` | Log bandwidth stats every 10 s |
 | `--log` | `info` | Log level: `debug` / `info` / `warn` / `error` |
@@ -76,7 +78,7 @@ GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o xray-cli-dar
 
 `--link` takes precedence over the `XRAY_LINK` environment variable; the env var is only read if `--link` is not passed. `--status` is disabled by default — pass an explicit address to enable it; there is no default bind address.
 
-If none of `--link`, `--config`, or `--list-profiles` is given, the binary opens a native macOS file picker to select a config file (no-op on non-macOS — falls straight through to the usage error below).
+If none of `--link`, `--config`, `--subscribe`, or `--list-profiles` is given, the binary opens a native macOS file picker to select a config file (no-op on non-macOS — falls straight through to the usage error below).
 
 ### Connecting with a direct link
 
@@ -95,8 +97,9 @@ vless://user@host:443?...
 sudo ./xray-cli --config server.txt
 ```
 
-`.yaml` config — multiple named profiles:
+`.yaml` config — multiple named profiles, optional subscription:
 ```yaml
+subscription: "https://sub.example.com/token"  # optional remote profiles
 default: home   # optional; falls back to the first entry if omitted
 
 profiles:
@@ -110,6 +113,31 @@ profiles:
 sudo ./xray-cli --config servers.yaml --profile work
 sudo ./xray-cli --config servers.yaml --list-profiles   # see what's available
 ```
+
+### Connecting with a subscription URL
+
+Subscription URLs return a base64-encoded list of proxy links (one per line), compatible with v2rayNG, Shadowrocket, Clash, and similar clients. Supported link types: `vless://`, `vmess://`, `trojan://`, `ss://`, `ssr://`.
+
+```bash
+sudo ./xray-cli --subscribe "https://sub.example.com/token"
+sudo ./xray-cli --subscribe "https://sub.example.com/token" --profile "US Server"
+sudo ./xray-cli --subscribe "https://sub.example.com/token" --list-profiles
+```
+
+Profile names are extracted from the link fragment (`#Name`) for most protocols, or from the `ps` field for vmess links.
+
+You can also put the subscription URL in a `.yaml` config file alongside inline profiles:
+
+```yaml
+subscription: "https://sub.example.com/token"
+default: home
+
+profiles:
+  - name: home
+    link: "vless://..."
+```
+
+Inline profiles take priority — subscription profiles with the same name or link are skipped. If the subscription fetch fails but inline profiles exist, the client falls back to inline-only with a warning.
 
 ### macOS menu bar
 
@@ -192,7 +220,7 @@ ok
 
 ## How it works
 
-1. Parses the XRay link (direct or from a `.txt`/`.yaml` config) and starts an XRay core SOCKS inbound on a free local port.
+1. Parses the XRay link (direct, from a `.txt`/`.yaml` config, or fetched from a subscription URL) and starts an XRay core SOCKS inbound on a free local port.
 2. Waits for the inbound to accept TCP connections before proceeding (bounded poll, 5 s timeout) rather than assuming it's ready immediately after start.
 3. Creates a TUN device and routes all system traffic through it (split-default routes: `0.0.0.0/1` + `128.0.0.0/1`), with an explicit route exception back to the XRay server itself through the original gateway.
 4. Bridges TUN ↔ XRay SOCKS via `tun2socks`.

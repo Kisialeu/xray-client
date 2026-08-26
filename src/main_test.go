@@ -42,26 +42,26 @@ func TestBackoff_Exponential(t *testing.T) {
 	init := time.Second
 	max := 60 * time.Second
 
-	if got := backoff(1, init, max); got != time.Second {
+	if got := backoffDuration(1, init, max); got != time.Second {
 		t.Errorf("attempt 1: got %v, want 1s", got)
 	}
-	if got := backoff(2, init, max); got != 2*time.Second {
+	if got := backoffDuration(2, init, max); got != 2*time.Second {
 		t.Errorf("attempt 2: got %v, want 2s", got)
 	}
-	if got := backoff(3, init, max); got != 4*time.Second {
+	if got := backoffDuration(3, init, max); got != 4*time.Second {
 		t.Errorf("attempt 3: got %v, want 4s", got)
 	}
 }
 
 func TestBackoff_CapsAtMax(t *testing.T) {
-	got := backoff(100, time.Second, 30*time.Second)
+	got := backoffDuration(100, time.Second, 30*time.Second)
 	if got != 30*time.Second {
 		t.Errorf("got %v, want 30s cap", got)
 	}
 }
 
 func TestBackoff_MaxEqualInitial(t *testing.T) {
-	got := backoff(1, 5*time.Second, 5*time.Second)
+	got := backoffDuration(1, 5*time.Second, 5*time.Second)
 	if got != 5*time.Second {
 		t.Errorf("got %v", got)
 	}
@@ -93,7 +93,9 @@ func TestStatusServer_Health_Connected(t *testing.T) {
 	s := &state{}
 	s.connected.Store(true)
 	addr := freeAddr(t)
-	startStatusServer(addr, s)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startStatusServer(ctx, addr, s)
 	waitReady(t, addr)
 
 	resp, err := http.Get("http://" + addr + "/health")
@@ -114,7 +116,9 @@ func TestStatusServer_Health_Disconnected(t *testing.T) {
 	s := &state{}
 	s.connected.Store(false)
 	addr := freeAddr(t)
-	startStatusServer(addr, s)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startStatusServer(ctx, addr, s)
 	waitReady(t, addr)
 
 	resp, err := http.Get("http://" + addr + "/health")
@@ -134,7 +138,9 @@ func TestStatusServer_Status_JSON(t *testing.T) {
 	s.bytesOut.Store(5678)
 	s.reconnects.Store(2)
 	addr := freeAddr(t)
-	startStatusServer(addr, s)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startStatusServer(ctx, addr, s)
 	waitReady(t, addr)
 
 	resp, err := http.Get("http://" + addr + "/status")
