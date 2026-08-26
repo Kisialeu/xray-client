@@ -31,7 +31,7 @@ set -euo pipefail
 PKG_DIR="./src"   # Go source lives in ./src, not the repo root
 OUT_DIR="$(pwd)/dist"
 SRC_ROOT="$(pwd)"
-GO_IMAGE="golang:1.25"
+GO_IMAGE="golang:1.26"
 
 usage() {
   cat <<EOF
@@ -159,7 +159,7 @@ fi
 
 # ── Local / native-OS path (with optional cross-arch) ────────────────────
 if ! command -v go >/dev/null 2>&1; then
-  echo "Error: 'go' not found on PATH. Install Go 1.25+, or use '--os linux' for a Docker-based Linux build instead." >&2
+  echo "Error: 'go' not found on PATH. Install Go 1.26+, or use '--os linux' for a Docker-based Linux build instead." >&2
   exit 1
 fi
 
