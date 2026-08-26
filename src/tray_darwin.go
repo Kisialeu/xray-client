@@ -29,25 +29,7 @@ var (
 func iconConn() []byte { return cachedIconConn }
 func iconDisc() []byte { return cachedIconDisc }
 
-// ── controller commands (issue 3: typed, serialized) ─────────────────────────
-
-type cmdKind int
-
-const (
-	cmdSwitch cmdKind = iota // stop current + start new profile
-	cmdStop                  // stop current, stay disconnected
-)
-
-// stopTimeout must exceed the disconnect timeout in client.go (30s) so the
-// controller doesn't give up waiting while runWithReconnect is still tearing
-// down the previous connection.
-const stopTimeout = 35 * time.Second
-
-type vpnCmd struct {
-	kind    cmdKind
-	profile Profile
-	done    chan error
-}
+// Controller command types (cmdKind, vpnCmd, stopTimeout) are in controller.go.
 
 // ── menu layout ───────────────────────────────────────────────────────────────
 //
