@@ -330,7 +330,7 @@ func main() {
 	if *doListProfiles {
 		switch {
 		case *subscribeURL != "":
-			profiles, err := fetchSubscription(*subscribeURL)
+			profiles, err := fetchSubscription(logger, *subscribeURL)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)
 				os.Exit(1)
@@ -361,7 +361,7 @@ func main() {
 
 	switch {
 	case *subscribeURL != "":
-		p, all, err := loadSubscriptionProfiles(*subscribeURL, *profileName)
+		p, all, err := loadSubscriptionProfiles(*subscribeURL, *profileName, logger)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, "Run with --help for usage.")

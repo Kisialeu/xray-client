@@ -69,8 +69,8 @@ func loadLink(path, profileName, flagLink string) (Profile, error) {
 	}
 }
 
-func loadSubscriptionProfiles(subURL, profileName string) (Profile, []Profile, error) {
-	profiles, err := fetchSubscription(subURL)
+func loadSubscriptionProfiles(subURL, profileName string, logger *slog.Logger) (Profile, []Profile, error) {
+	profiles, err := fetchSubscription(logger, subURL)
 	if err != nil {
 		return Profile{}, nil, err
 	}
@@ -79,6 +79,7 @@ func loadSubscriptionProfiles(subURL, profileName string) (Profile, []Profile, e
 	if err != nil {
 		return Profile{}, nil, fmt.Errorf("%w in subscription", err)
 	}
+	logger.Info("subscription profile selected", "name", selected.Name, "total", len(profiles))
 	return selected, profiles, nil
 }
 
@@ -124,15 +125,19 @@ func loadYAMLAll(path, profileName string, logger *slog.Logger) (Profile, []Prof
 	}
 
 	profiles := cfg.Profiles
+	logger.Debug("config loaded", "path", path, "inline_profiles", len(profiles), "has_subscription", cfg.Subscription != "")
+
 	if cfg.Subscription != "" {
-		sub, subErr := fetchSubscription(cfg.Subscription)
+		sub, subErr := fetchSubscription(logger, cfg.Subscription)
 		if subErr != nil {
 			if len(profiles) == 0 {
 				return Profile{}, nil, fmt.Errorf("subscription fetch failed and no inline profiles: %w", subErr)
 			}
 			logger.Warn("subscription fetch failed, using inline profiles only", "err", subErr)
 		} else {
+			before := len(profiles)
 			profiles = mergeProfiles(profiles, sub)
+			logger.Info("profiles merged", "inline", before, "subscription", len(sub), "total", len(profiles))
 		}
 	}
 
@@ -144,6 +149,7 @@ func loadYAMLAll(path, profileName string, logger *slog.Logger) (Profile, []Prof
 	if err != nil {
 		return Profile{}, nil, fmt.Errorf("%w in %s", err, path)
 	}
+	logger.Info("profile selected", "name", selected.Name, "total", len(profiles))
 	return selected, profiles, nil
 }
 
@@ -219,7 +225,7 @@ func listProfiles(path string, logger *slog.Logger) error {
 
 	profiles := cfg.Profiles
 	if cfg.Subscription != "" {
-		sub, subErr := fetchSubscription(cfg.Subscription)
+		sub, subErr := fetchSubscription(logger, cfg.Subscription)
 		if subErr != nil {
 			logger.Warn("subscription fetch failed", "err", subErr)
 		} else {

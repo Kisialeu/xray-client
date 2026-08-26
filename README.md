@@ -227,6 +227,19 @@ ok
 5. On disconnect or error, rolls back routes/TUN/XRay instance in reverse order and reconnects with exponential backoff (up to `--max-reconnects` attempts, 0 = unlimited).
 6. In `--tray` mode, `systray` owns the main goroutine (a macOS Cocoa requirement); the reconnect loop and a dedicated controller goroutine run in the background, serializing connect/disconnect/switch so only one tunnel is ever active at a time.
 
+### Logging
+
+Subscription fetches and profile loading are logged via Go's `slog` structured logger. Use `--log debug` to see detailed information:
+
+```
+level=INFO msg="fetching subscription" url=https://sub.example.com/token
+level=DEBUG msg="subscription response" status=200 elapsed=245ms
+level=DEBUG msg="subscription decoded" encoding=base64 decoded_bytes=1420
+level=INFO msg="subscription loaded" profiles=8 elapsed=250ms
+level=INFO msg="profiles merged" inline=2 subscription=8 total=9
+level=INFO msg="profile selected" name=helsinki total=9
+```
+
 ### Known limitation: unclean shutdown leaves routes behind
 
 If the process is killed with `SIGKILL` (`kill -9`) rather than `SIGTERM`/`SIGINT`, the rollback and route-cleanup code never runs — this is a fundamental limitation of `-9`, not a bug in this client. If you see `add route: ... file exists` on the next start, a previous instance likely didn't shut down cleanly:
