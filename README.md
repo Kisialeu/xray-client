@@ -3,25 +3,20 @@
 XRay VPN client in Go.
 
 **Features:**
-- Auto-reconnect with exponential backoff (2 s → 60 s, capped, configurable attempt limit) — triggers on both initial connect failures **and** mid-session tunnel drops
+- Auto-reconnect with exponential backoff (2 s → 60 s, capped, configurable attempt limit)
 - Subscription URL support — fetch profiles from a remote base64-encoded subscription endpoint (compatible with v2rayNG, Shadowrocket, etc.)
 - Multi-profile config support (`.yaml` with named profiles, subscription URL, or a plain `.txt` link file)
-- macOS menu bar app (`--tray`) — icon changes on connect/disconnect, live ↓RX/↑TX in menu, profile switching from the menu
-- HTTP status server — `/health` (Docker-friendly) and `/status` (JSON metrics)
-- Bandwidth display — ↓RX/↑TX rate + totals every 10 s (`--verbose`)
-- Thread-safe metrics via `sync/atomic`
-- Native macOS file picker fallback when no `--link`/`--config`/`--list-profiles` is given (no-op on other platforms)
-
-**Dependencies:** built on top of `github.com/goxray/core` (`route`, `tun`, `pipe2socks`) and `github.com/lilendian0x00/xray-knife` for the underlying XRay core integration.
+- macOS menu bar app (`--tray`) — icon changes on connect/disconnect, live ↓RX/↑TX in menu, profile switching
+- Daemon + tray client split — root daemon for VPN, user-level tray for UI, communicate over HTTP
+- HTTP status server — `/health` and `/status` (JSON metrics)
 
 ---
 
 ## Build
 
-Go source lives in `./src`. Run `build.sh` from the repo root (the directory containing `src/`).
+Go source lives in `./src`. Run `build.sh` from the repo root.
 
 ```bash
-chmod +x build.sh
 ./build.sh                  # native: current OS + arch, CGO enabled
 ./build.sh --arch arm64     # native OS, arm64
 ./build.sh --arch amd64     # native OS, amd64
@@ -29,31 +24,9 @@ chmod +x build.sh
 
 Output: `./dist/<os>/xray-cli-<arch>`
 
-- Native builds use your local Go toolchain with `CGO_ENABLED=1`, so `--tray` works when built on macOS.
-- Cross-arch on the same OS is supported (e.g. macOS arm64 host → macOS amd64 binary), but cgo-dependent code (`--tray`) may fail to build without a matching cgo cross-toolchain for the target arch installed locally.
-- There is no supported cross-OS path (e.g. building a darwin binary from Linux, or vice versa) through this script — `github.com/getlantern/systray` requires cgo/Cocoa on macOS, and that toolchain isn't available cross-OS.
+Requires Go 1.26+. `--tray` requires macOS with `CGO_ENABLED=1` (the default for native builds).
 
-Requires Go 1.26+ installed locally (`go env GOOS`/`GOARCH` determine the native target).
-
-### Manual cross-compilation (single target, no `--tray`)
-
-```bash
-# Linux amd64
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o xray-cli-linux-amd64 ./src
-
-# Linux arm64
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o xray-cli-linux-arm64 ./src
-
-# macOS amd64 (no --tray; CGO disabled)
-GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o xray-cli-darwin-amd64 ./src
-
-# macOS arm64 (no --tray; CGO disabled)
-GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o xray-cli-darwin-arm64 ./src
-```
-
-`--tray` is macOS-only and requires cgo (`CGO_ENABLED=1`, built natively on macOS — cross-compiling cgo from Linux is not supported). On any non-darwin target, passing `--tray` causes the binary to panic immediately on startup (the non-darwin tray stub panics rather than silently ignoring the flag) — treat it as a hard error, not a no-op.
-
-> `sudo` / `CAP_NET_ADMIN` is required at **runtime** (regardless of how the binary was built) to create a TUN device.
+> `sudo` is required at **runtime** to create a TUN device.
 
 ---
 
@@ -64,39 +37,25 @@ GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o xray-cli-dar
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--link` | — | XRay connection link (`vless://…`, `vmess://…`, `trojan://…`, …) |
-| `--config` | — | Config file: `.txt` (first non-comment line is the link) or `.yaml` (multi-profile) |
+| `--config` | — | Config file: `.txt` (single link) or `.yaml` (multi-profile) |
 | `--subscribe` | — | Subscription URL — fetches a base64-encoded list of proxy links |
-| `--profile` | — | Named profile to use from a `.yaml` config or subscription (default: `default:` key, else first entry) |
-| `--list-profiles` | `false` | Print available profiles from `--config` or `--subscribe` and exit |
-| `--daemon-addr` | `""` (disabled) | Run as daemon with HTTP control API; combine with `--tray` for client-only tray |
-| `--status` | `""` (disabled) | HTTP status server bind address, e.g. `127.0.0.1:9999` |
+| `--profile` | — | Named profile to use from a `.yaml` config or subscription |
+| `--list-profiles` | `false` | Print available profiles and exit |
+| `--daemon-addr` | `""` | Run as daemon with HTTP control API; combine with `--tray` for client-only tray |
+| `--status` | `""` | HTTP status server bind address, e.g. `127.0.0.1:9999` |
 | `--verbose` | `false` | Log bandwidth stats every 10 s |
 | `--log` | `info` | Log level: `debug` / `info` / `warn` / `error` |
-| `--tray` | on for darwin, off elsewhere | Run as macOS menu bar app — panics on non-darwin |
+| `--tray` | on for darwin | macOS menu bar app |
 | `--tls-insecure` | `false` | Allow self-signed TLS certificates |
 | `--max-reconnects` | `0` | Max reconnect attempts (0 = unlimited) |
-| `--help` | — | Show usage and exit |
 
-`--link` takes precedence over the `XRAY_LINK` environment variable; the env var is only read if `--link` is not passed. `--status` is disabled by default — pass an explicit address to enable it; there is no default bind address.
-
-If none of `--link`, `--config`, `--subscribe`, or `--list-profiles` is given, the binary opens a native macOS file picker to select a config file (no-op on non-macOS — falls straight through to the usage error below).
-
-### Connecting with a direct link
+### Direct link
 
 ```bash
 sudo ./xray-cli --link "vless://..."
 ```
 
-### Connecting with a config file
-
-`.txt` config — first non-comment line is the link:
-```
-# my server
-vless://user@host:443?...
-```
-```bash
-sudo ./xray-cli --config server.txt
-```
+### Config file
 
 `.yaml` config — multiple named profiles, optional subscription:
 ```yaml
@@ -112,12 +71,10 @@ profiles:
 ```
 ```bash
 sudo ./xray-cli --config servers.yaml --profile work
-sudo ./xray-cli --config servers.yaml --list-profiles   # see what's available
+sudo ./xray-cli --config servers.yaml --list-profiles
 ```
 
-### Connecting with a subscription URL
-
-Subscription URLs return a base64-encoded list of proxy links (one per line), compatible with v2rayNG, Shadowrocket, Clash, and similar clients. Supported link types: `vless://`, `vmess://`, `trojan://`, `ss://`, `ssr://`.
+### Subscription URL
 
 ```bash
 sudo ./xray-cli --subscribe "https://sub.example.com/token"
@@ -125,20 +82,7 @@ sudo ./xray-cli --subscribe "https://sub.example.com/token" --profile "US Server
 sudo ./xray-cli --subscribe "https://sub.example.com/token" --list-profiles
 ```
 
-Profile names are extracted from the link fragment (`#Name`) for most protocols, or from the `ps` field for vmess links.
-
-You can also put the subscription URL in a `.yaml` config file alongside inline profiles:
-
-```yaml
-subscription: "https://sub.example.com/token"
-default: home
-
-profiles:
-  - name: home
-    link: "vless://..."
-```
-
-Inline profiles take priority — subscription profiles with the same name or link are skipped. If the subscription fetch fails but inline profiles exist, the client falls back to inline-only with a warning.
+Inline profiles take priority over subscription profiles with the same name or link. If the subscription fetch fails but inline profiles exist, the client falls back to inline-only with a warning.
 
 ### macOS menu bar
 
@@ -146,16 +90,7 @@ Inline profiles take priority — subscription profiles with the same name or li
 sudo ./xray-cli --config servers.yaml --tray
 ```
 
-The icon in the menu bar switches between an outline circle (disconnected) and a filled circle (connected). The menu shows:
-- Connection status + session duration
-- Live RX / TX bandwidth and running totals
-- All profiles from `--config`, with a checkmark on the active one — click any to switch
-- Connect / Disconnect
-- About… / Quit
-
-Switching profiles, connecting, and disconnecting from the menu all go through a single serializing controller goroutine, so only one tunnel is ever active at a time even if menu items are clicked in quick succession.
-
-Requires a binary built natively on macOS with cgo enabled (see [Build](#build)) — `--tray` on a non-darwin or CGO-disabled binary panics at startup rather than failing gracefully, so don't rely on it as a runtime feature check.
+The menu shows connection status, session duration, live bandwidth, profile switching, and connect/disconnect controls.
 
 ### Daemon + tray client (autostart with tray icon)
 
@@ -173,8 +108,6 @@ sudo xray-cli --config servers.yaml --daemon-addr 127.0.0.1:19099
 # Terminal 2: tray client (no root needed)
 xray-cli --tray --daemon-addr 127.0.0.1:19099
 ```
-
-The tray client gets profiles and status from the daemon's API — no config files or root access needed. Profile switching, connect, and disconnect all work from the tray menu.
 
 **Daemon API** (on `--daemon-addr`):
 - `GET /health` — 200 / 503
@@ -203,58 +136,9 @@ sudo ./setup-macos.sh uninstall  # remove everything
 
 ---
 
-## HTTP endpoints
-
-Disabled by default. Enable with `--status <addr>`, e.g. `--status 127.0.0.1:9999`.
-
-### `GET /health`
-
-Returns `200 OK` when the tunnel is up, `503` otherwise. Suitable for a Docker `HEALTHCHECK` or any external liveness probe.
-
-```
-$ curl http://localhost:9999/health
-ok
-```
-
-### `GET /status`
-
-```json
-{
-  "connected":  true,
-  "uptime_s":   42,
-  "bytes_in":   1048576,
-  "bytes_out":  204800,
-  "reconnects": 0
-}
-```
-
----
-
-## How it works
-
-1. Parses the XRay link (direct, from a `.txt`/`.yaml` config, or fetched from a subscription URL) and starts an XRay core SOCKS inbound on a free local port.
-2. Waits for the inbound to accept TCP connections before proceeding (bounded poll, 5 s timeout) rather than assuming it's ready immediately after start.
-3. Creates a TUN device and routes all system traffic through it (split-default routes: `0.0.0.0/1` + `128.0.0.0/1`), with an explicit route exception back to the XRay server itself through the original gateway.
-4. Bridges TUN ↔ XRay SOCKS via `tun2socks`.
-5. On disconnect or error, rolls back routes/TUN/XRay instance in reverse order and reconnects with exponential backoff (up to `--max-reconnects` attempts, 0 = unlimited).
-6. In `--tray` mode, `systray` owns the main goroutine (a macOS Cocoa requirement); the reconnect loop and a dedicated controller goroutine run in the background, serializing connect/disconnect/switch so only one tunnel is ever active at a time.
-
-### Logging
-
-Subscription fetches and profile loading are logged via Go's `slog` structured logger. Use `--log debug` to see detailed information:
-
-```
-level=INFO msg="fetching subscription" url=https://sub.example.com/token
-level=DEBUG msg="subscription response" status=200 elapsed=245ms
-level=DEBUG msg="subscription decoded" encoding=base64 decoded_bytes=1420
-level=INFO msg="subscription loaded" profiles=8 elapsed=250ms
-level=INFO msg="profiles merged" inline=2 subscription=8 total=9
-level=INFO msg="profile selected" name=helsinki total=9
-```
-
 ### Known limitation: unclean shutdown leaves routes behind
 
-If the process is killed with `SIGKILL` (`kill -9`) rather than `SIGTERM`/`SIGINT`, the rollback and route-cleanup code never runs — this is a fundamental limitation of `-9`, not a bug in this client. If you see `add route: ... file exists` on the next start, a previous instance likely didn't shut down cleanly:
+If the process is killed with `SIGKILL` (`kill -9`), route cleanup doesn't run. If you see `add route: ... file exists` on the next start:
 
 ```bash
 ps aux | grep xray-cli            # find and kill any stale instances
