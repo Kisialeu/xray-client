@@ -32,7 +32,7 @@ Output: `./dist/<os>/xray-cli-<arch>`
 - Cross-arch on the same OS is supported (e.g. macOS arm64 host → macOS amd64 binary), but cgo-dependent code (`--tray`) may fail to build without a matching cgo cross-toolchain for the target arch installed locally.
 - There is no supported cross-OS path (e.g. building a darwin binary from Linux, or vice versa) through this script — `github.com/getlantern/systray` requires cgo/Cocoa on macOS, and that toolchain isn't available cross-OS.
 
-Requires Go 1.25+ installed locally (`go env GOOS`/`GOARCH` determine the native target).
+Requires Go 1.26+ installed locally (`go env GOOS`/`GOARCH` determine the native target).
 
 ### Manual cross-compilation (single target, no `--tray`)
 
