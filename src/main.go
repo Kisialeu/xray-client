@@ -26,10 +26,8 @@ const (
 )
 
 func init() {
-	// Return memory to OS aggressively — we're a long-running network daemon,
-	// not a throughput-sensitive computation. Keeps RSS low between bursts.
-	debug.SetGCPercent(20)
-	runtime.GOMAXPROCS(2) // TUN + XRay don't benefit from more than 2 OS threads
+	debug.SetMemoryLimit(64 << 20) // 64 MB soft limit — GC stays lazy below, aggressive near it
+	runtime.GOMAXPROCS(4)
 }
 
 // ── shared state ──────────────────────────────────────────────────────────────
