@@ -250,6 +250,8 @@ PROFILE SELECTION (YAML config only)
   --list-profiles   Print available profiles and exit
 
 FLAGS
+  --daemon-addr <addr>  Run as daemon with HTTP control API (e.g. 127.0.0.1:19099)
+                          Combine with --tray for client-only tray mode
   --status  <addr>  Enable HTTP status server (e.g. 127.0.0.1:9999)
                       GET /health  → 200 ok / 503 disconnected
                       GET /status  → JSON metrics
@@ -274,6 +276,13 @@ YAML CONFIG FORMAT
 TXT CONFIG FORMAT
   # comment lines are ignored
   vless://user@host:443?...
+
+DAEMON + TRAY CLIENT MODE
+  # Terminal 1: daemon (root, headless, HTTP API)
+  sudo xray-cli --config servers.yaml --daemon-addr 127.0.0.1:19099
+
+  # Terminal 2: tray client (user, menu bar, no root needed)
+  xray-cli --tray --daemon-addr 127.0.0.1:19099
 
 EXAMPLES
   xray-cli --link "vless://..."
@@ -301,6 +310,7 @@ func main() {
 	logLevel := fs.String("log", "info", "")
 	tlsInsecure := fs.Bool("tls-insecure", false, "")
 	maxReconnects := fs.Int("max-reconnects", 0, "")
+	daemonAddr := fs.String("daemon-addr", "", "")
 	tray := fs.Bool("tray", defaultTray, "")
 	help := fs.Bool("help", false, "")
 
@@ -310,6 +320,25 @@ func main() {
 
 	if *help {
 		fmt.Print(helpText)
+		return
+	}
+
+	// Check if --tray was explicitly passed (vs darwin default).
+	// Without this, `--daemon-addr` on darwin enters tray-client mode
+	// instead of daemon mode because defaultTray is true.
+	trayExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "tray" {
+			trayExplicit = true
+		}
+	})
+
+	// Tray client mode: explicit --tray + --daemon-addr → no root, no config, polls daemon API
+	if *tray && trayExplicit && *daemonAddr != "" {
+		logger := buildLogger(*logLevel)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		runTrayClient(ctx, stop, logger, *daemonAddr)
 		return
 	}
 
@@ -402,15 +431,25 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if len(allProfiles) == 0 {
+		allProfiles = []Profile{profile}
+	}
+
+	// Daemon mode: headless VPN with HTTP control API
+	if *daemonAddr != "" {
+		if *verbose {
+			startBandwidthPrinter(ctx, logger, s)
+		}
+		runDaemon(ctx, logger, s, profile, allProfiles, *maxReconnects, *daemonAddr)
+		return
+	}
+
 	if *statusAddr != "" {
 		startStatusServer(ctx, *statusAddr, s)
 		logger.Info("status server listening", "addr", *statusAddr)
 	}
 
 	if *tray {
-		if len(allProfiles) == 0 {
-			allProfiles = []Profile{profile}
-		}
 		runTray(ctx, stop, logger, s, profile, allProfiles, *maxReconnects)
 		return
 	}

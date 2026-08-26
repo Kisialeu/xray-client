@@ -68,6 +68,7 @@ GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o xray-cli-dar
 | `--subscribe` | — | Subscription URL — fetches a base64-encoded list of proxy links |
 | `--profile` | — | Named profile to use from a `.yaml` config or subscription (default: `default:` key, else first entry) |
 | `--list-profiles` | `false` | Print available profiles from `--config` or `--subscribe` and exit |
+| `--daemon-addr` | `""` (disabled) | Run as daemon with HTTP control API; combine with `--tray` for client-only tray |
 | `--status` | `""` (disabled) | HTTP status server bind address, e.g. `127.0.0.1:9999` |
 | `--verbose` | `false` | Log bandwidth stats every 10 s |
 | `--log` | `info` | Log level: `debug` / `info` / `warn` / `error` |
@@ -156,38 +157,55 @@ Switching profiles, connecting, and disconnecting from the menu all go through a
 
 Requires a binary built natively on macOS with cgo enabled (see [Build](#build)) — `--tray` on a non-darwin or CGO-disabled binary panics at startup rather than failing gracefully, so don't rely on it as a runtime feature check.
 
-### Run in the background (macOS launchd)
+### Daemon + tray client (autostart with tray icon)
 
-Create `~/Library/LaunchAgents/com.xray-cli.plist`:
+The `--daemon-addr` flag splits xray-cli into two cooperating processes:
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.xray-cli</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/xray-cli</string>
-    <string>--tray</string>
-    <string>--config</string>
-    <string>/usr/local/etc/xray-cli/servers.yaml</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-</dict>
-</plist>
-```
+| Process | Runs as | What it does |
+|---------|---------|--------------|
+| **Daemon** (LaunchDaemon) | root | Headless VPN + HTTP control API |
+| **Tray client** (LaunchAgent) | user | Menu bar icon, polls daemon, sends commands |
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.xray-cli.plist
+# Terminal 1: daemon (root)
+sudo xray-cli --config servers.yaml --daemon-addr 127.0.0.1:19099
+
+# Terminal 2: tray client (no root needed)
+xray-cli --tray --daemon-addr 127.0.0.1:19099
 ```
 
-> `launchd` runs this as your user, not root — TUN creation still needs elevated privileges, so in practice this pattern typically requires either a privileged helper or running the agent as a `LaunchDaemon` under root instead. Adjust to your environment; this plist is a starting point, not a drop-in privilege-safe config.
+The tray client gets profiles and status from the daemon's API — no config files or root access needed. Profile switching, connect, and disconnect all work from the tray menu.
+
+**Daemon API** (on `--daemon-addr`):
+- `GET /health` — 200 / 503
+- `GET /status` — JSON: connected, active_profile, bytes_in/out, reconnects
+- `GET /profiles` — available profiles + which is active
+- `POST /connect` — `{"profile": "name"}` to switch
+- `POST /disconnect` — stop VPN
+
+**Install as launchd services:**
+
+```bash
+./build.sh
+sudo ./install-macos.sh              # uses servers.yaml by default
+sudo ./install-macos.sh myconfig.yaml  # or specify a config
+```
+
+This installs a LaunchDaemon (root, headless) and a LaunchAgent (user, tray icon). Both start on boot/login and auto-restart on crash.
+
+```bash
+# Check status
+sudo launchctl list | grep xray
+launchctl list | grep xray
+
+# Logs
+tail -f /var/log/xray-cli.log       # daemon
+tail -f /tmp/xray-cli-tray.log      # tray
+
+# Stop
+sudo launchctl unload /Library/LaunchDaemons/com.xray-cli.plist
+launchctl unload ~/Library/LaunchAgents/com.xray-cli.tray.plist
+```
 
 ---
 
