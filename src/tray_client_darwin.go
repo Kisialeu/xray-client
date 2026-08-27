@@ -387,7 +387,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									status += flagStr + " "
 								}
 								status += pName
-								bw := fmt.Sprintf(" ↓ %s/s   ↑ %s/s", humanBytes(rxRate), humanBytes(txRate))
+								bw := fmt.Sprintf(" ↑ %s/s   ↓ %s/s", humanBytes(rxRate), humanBytes(txRate))
 								tot := fmt.Sprintf(" Total ↑ %s   ↓ %s", humanBytes(float64(st.BytesIn)), humanBytes(float64(st.BytesOut)))
 
 								if status != prevStatus {
