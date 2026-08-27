@@ -40,6 +40,7 @@ func runDaemon(
 		)
 
 		start := func(p Profile) {
+			saveLastProfile(p.Name)
 			vpnCtx, cancel := context.WithCancel(ctx)
 			vpnCancel = cancel
 			d := make(chan struct{})

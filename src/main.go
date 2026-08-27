@@ -433,6 +433,12 @@ func main() {
 		allProfiles = []Profile{profile}
 	}
 
+	if last := loadLastProfile(); last != "" {
+		if p, ok := findProfile(allProfiles, last); ok {
+			profile = p
+		}
+	}
+
 	// Daemon mode: headless VPN with HTTP control API
 	if *daemonAddr != "" {
 		if *verbose {

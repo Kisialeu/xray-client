@@ -426,11 +426,8 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 										if !ok {
 											lat = -1
 										}
-										if pi.name == pName {
-											pi.item.SetTitle(formatProfileTitle("  ✓ ", pi.name, lat, flags[pi.name]))
-										} else {
-											pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
-										}
+                                        pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
+
 									}
 									prevActiveName = pName
 								}
