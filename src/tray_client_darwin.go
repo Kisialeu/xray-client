@@ -105,6 +105,21 @@ func (dc *daemonClient) refresh() error {
 	return nil
 }
 
+func (dc *daemonClient) ping() ([]PingResult, error) {
+	resp, err := dc.client.Get(dc.base + "/ping")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Results []PingResult `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result.Results, nil
+}
+
 func (dc *daemonClient) disconnect() error {
 	resp, err := dc.client.Post(dc.base+"/disconnect", "application/json", nil)
 	if err != nil {
@@ -160,6 +175,31 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 		}
 		var profileItems []profileItem
 
+		formatProfileTitle := func(prefix, name string, latencyMs int) string {
+			if latencyMs > 0 {
+				return fmt.Sprintf("%s%s  (%dms)", prefix, name, latencyMs)
+			}
+			if latencyMs == 0 {
+				return fmt.Sprintf("%s%s  (<1ms)", prefix, name)
+			}
+			return prefix + name
+		}
+
+		latencies := make(map[string]int)
+
+		updateLatencies := func(results []PingResult) {
+			for _, r := range results {
+				latencies[r.Name] = r.LatencyMs
+			}
+			for _, pi := range profileItems {
+				lat, ok := latencies[pi.name]
+				if !ok {
+					lat = -1
+				}
+				pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat))
+			}
+		}
+
 		// Fetch profiles from daemon (retry until available)
 		go func() {
 			for {
@@ -188,6 +228,13 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 						}
 					}()
 				}
+
+				// Ping servers in background to show latency
+				go func() {
+					if results, err := dc.ping(); err == nil {
+						updateLatencies(results)
+					}
+				}()
 
 				systray.AddSeparator()
 
@@ -263,6 +310,9 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									}()
 								}
 								logger.Info("profiles refreshed", "count", len(profs.Profiles))
+								if results, err := dc.ping(); err == nil {
+									updateLatencies(results)
+								}
 							}()
 						case <-mQuit.ClickedCh:
 							rootCancel()
@@ -355,10 +405,14 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 
 								if pName != prevActiveName {
 									for _, pi := range profileItems {
+										lat, ok := latencies[pi.name]
+										if !ok {
+											lat = -1
+										}
 										if pi.name == pName {
-											pi.item.SetTitle("  ✓ " + pi.name)
+											pi.item.SetTitle(formatProfileTitle("  ✓ ", pi.name, lat))
 										} else {
-											pi.item.SetTitle("    " + pi.name)
+											pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat))
 										}
 									}
 									prevActiveName = pName
@@ -378,7 +432,11 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									mDisconnect.Hide()
 									mConnect.Show()
 									for _, pi := range profileItems {
-										pi.item.SetTitle("    " + pi.name)
+										lat, ok := latencies[pi.name]
+										if !ok {
+											lat = -1
+										}
+										pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat))
 									}
 									prevActiveName = ""
 								}
