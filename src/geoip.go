@@ -57,7 +57,16 @@ func resolveCountries(hostports []string) map[string]string {
 }
 
 func batchGeoIP(hosts []string) []string {
-	body, _ := json.Marshal(hosts)
+	ips := make([]string, len(hosts))
+	for i, h := range hosts {
+		if addrs, err := net.LookupHost(h); err == nil && len(addrs) > 0 {
+			ips[i] = addrs[0]
+		} else {
+			ips[i] = h
+		}
+	}
+
+	body, _ := json.Marshal(ips)
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Post(
 		"http://ip-api.com/batch?fields=countryCode",

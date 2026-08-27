@@ -354,7 +354,6 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 							if err != nil {
 								if daemonOnline {
 									systray.SetTemplateIcon(iconDisc(), iconDisc())
-									systray.SetTitle("")
 									mStatusLine.SetTitle("⚫  Daemon offline")
 									prevStatus = "⚫  Daemon offline"
 									mSession.Hide()
@@ -374,9 +373,14 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 							prevIn, prevOut = st.BytesIn, st.BytesOut
 
 							if st.Connected {
-								systray.SetTemplateIcon(iconConn(), iconConn())
-
 								pName := st.ActiveProfile
+								if f := flags[pName]; f != "" {
+									if icon := renderEmojiIcon(f, 22); icon != nil {
+										systray.SetIcon(icon)
+									}
+								} else {
+									systray.SetTemplateIcon(iconConn(), iconConn())
+								}
 								session := ""
 								if st.UptimeS > 0 {
 									session = formatDuration(time.Duration(st.UptimeS) * time.Second)
@@ -424,7 +428,6 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 										}
 										if pi.name == pName {
 											pi.item.SetTitle(formatProfileTitle("  ✓ ", pi.name, lat, flags[pi.name]))
-											systray.SetTitle(flags[pi.name])
 										} else {
 											pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
 										}
@@ -445,7 +448,6 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									mTotals.Hide()
 									mDisconnect.Hide()
 									mConnect.Show()
-									systray.SetTitle("")
 									for _, pi := range profileItems {
 										lat, ok := latencies[pi.name]
 										if !ok {
