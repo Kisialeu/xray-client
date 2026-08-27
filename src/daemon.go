@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 )
+
+type reloadFunc func(logger *slog.Logger) ([]Profile, error)
 
 func runDaemon(
 	ctx context.Context,
@@ -17,7 +20,17 @@ func runDaemon(
 	allProfiles []Profile,
 	maxReconnects int,
 	addr string,
+	reload reloadFunc,
 ) {
+	var mu sync.RWMutex
+	profiles := allProfiles
+
+	getProfiles := func() []Profile {
+		mu.RLock()
+		defer mu.RUnlock()
+		return profiles
+	}
+
 	cmdCh := make(chan vpnCmd)
 
 	go func() {
@@ -116,8 +129,9 @@ func runDaemon(
 		type profileEntry struct {
 			Name string `json:"name"`
 		}
-		entries := make([]profileEntry, len(allProfiles))
-		for i, p := range allProfiles {
+		cur := getProfiles()
+		entries := make([]profileEntry, len(cur))
+		for i, p := range cur {
 			entries[i] = profileEntry{Name: p.Name}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -139,7 +153,7 @@ func runDaemon(
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request body"})
 			return
 		}
-		p, ok := findProfile(allProfiles, req.Profile)
+		p, ok := findProfile(getProfiles(), req.Profile)
 		if !ok {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": fmt.Sprintf("profile %q not found", req.Profile)})
 			return
@@ -173,6 +187,27 @@ func runDaemon(
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("/refresh", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if reload == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "no subscription or config to refresh"})
+			return
+		}
+		updated, err := reload(logger)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		mu.Lock()
+		profiles = updated
+		mu.Unlock()
+		logger.Info("profiles refreshed", "count", len(updated))
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "profiles": len(updated)})
 	})
 
 	srv := &http.Server{
