@@ -177,8 +177,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				mDisconnect := systray.AddMenuItem("Disconnect", "")
 				mDisconnect.Hide()
 				systray.AddSeparator()
-				mAbout := systray.AddMenuItem("About…", "")
-				mQuit := systray.AddMenuItem("Quit XRay VPN", "")
+				mQuit := systray.AddMenuItem("Quit", "")
 
 				// Event loop
 				go func() {
@@ -209,8 +208,6 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									logger.Error("disconnect failed", "err", err)
 								}
 							}()
-						case <-mAbout.ClickedCh:
-							// no-op in client mode (no local state for about)
 						case <-mQuit.ClickedCh:
 							rootCancel()
 							return
