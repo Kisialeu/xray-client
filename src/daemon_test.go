@@ -33,7 +33,7 @@ func startTestDaemon(t *testing.T) (addr string, s *state, cancel context.Cancel
 	cancel = c
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	go runDaemon(ctx, logger, s, initial, profiles, 1, addr)
+	go runDaemon(ctx, logger, s, initial, profiles, 1, addr, nil)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -289,6 +289,114 @@ func TestDaemon_Disconnect_WhenAlreadyStopped(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&got)
 	if got["ok"] != true {
 		t.Errorf("ok = %v, want true (disconnect when already stopped should succeed)", got["ok"])
+	}
+}
+
+// ── POST /refresh ───────────────────────────────────────────────────────────
+
+func startTestDaemonWithReload(t *testing.T, reload reloadFunc) (addr string, s *state, cancel context.CancelFunc) {
+	t.Helper()
+	s = &state{startAt: time.Now()}
+	profiles := []Profile{
+		{Name: "alpha", Link: "vless://alpha"},
+	}
+	initial := profiles[0]
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr = ln.Addr().String()
+	ln.Close()
+
+	ctx, c := context.WithCancel(context.Background())
+	cancel = c
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	go runDaemon(ctx, logger, s, initial, profiles, 1, addr, reload)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.Dial("tcp", addr)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("daemon at %s did not become ready", addr)
+	return
+}
+
+func TestDaemon_Refresh_AddsProfiles(t *testing.T) {
+	reload := func(_ *slog.Logger) ([]Profile, error) {
+		return []Profile{
+			{Name: "alpha", Link: "vless://alpha"},
+			{Name: "beta", Link: "vless://beta"},
+			{Name: "gamma", Link: "vless://gamma"},
+		}, nil
+	}
+	addr, _, cancel := startTestDaemonWithReload(t, reload)
+	defer cancel()
+
+	// Before refresh: 1 profile
+	resp, _ := http.Get("http://" + addr + "/profiles")
+	var before struct {
+		Profiles []struct{ Name string } `json:"profiles"`
+	}
+	json.NewDecoder(resp.Body).Decode(&before)
+	resp.Body.Close()
+	if len(before.Profiles) != 1 {
+		t.Fatalf("before refresh: got %d profiles, want 1", len(before.Profiles))
+	}
+
+	// Refresh
+	resp, err := http.Post("http://"+addr+"/refresh", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /refresh: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// After refresh: 3 profiles
+	resp2, _ := http.Get("http://" + addr + "/profiles")
+	var after struct {
+		Profiles []struct{ Name string } `json:"profiles"`
+	}
+	json.NewDecoder(resp2.Body).Decode(&after)
+	resp2.Body.Close()
+	if len(after.Profiles) != 3 {
+		t.Fatalf("after refresh: got %d profiles, want 3", len(after.Profiles))
+	}
+}
+
+func TestDaemon_Refresh_NoReloadFunc(t *testing.T) {
+	addr, _, cancel := startTestDaemon(t)
+	defer cancel()
+
+	resp, err := http.Post("http://"+addr+"/refresh", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /refresh: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestDaemon_Refresh_MethodNotAllowed(t *testing.T) {
+	addr, _, cancel := startTestDaemon(t)
+	defer cancel()
+
+	resp, err := http.Get("http://" + addr + "/refresh")
+	if err != nil {
+		t.Fatalf("GET /refresh: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", resp.StatusCode)
 	}
 }
 

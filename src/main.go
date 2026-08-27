@@ -438,7 +438,38 @@ func main() {
 		if *verbose {
 			startBandwidthPrinter(ctx, logger, s)
 		}
-		runDaemon(ctx, logger, s, profile, allProfiles, *maxReconnects, *daemonAddr)
+		var reload reloadFunc
+		switch {
+		case *subscribeURL != "":
+			subURL, profName, insecure := *subscribeURL, *profileName, *tlsInsecure
+			reload = func(l *slog.Logger) ([]Profile, error) {
+				_, all, err := loadSubscriptionProfiles(subURL, profName, l)
+				if err != nil {
+					return nil, err
+				}
+				if insecure {
+					for i := range all {
+						all[i].TLSInsecure = true
+					}
+				}
+				return all, nil
+			}
+		case *configPath != "" && isYAML(*configPath):
+			cfgPath, profName, insecure := *configPath, *profileName, *tlsInsecure
+			reload = func(l *slog.Logger) ([]Profile, error) {
+				_, all, err := loadYAMLAll(cfgPath, profName, l)
+				if err != nil {
+					return nil, err
+				}
+				if insecure {
+					for i := range all {
+						all[i].TLSInsecure = true
+					}
+				}
+				return all, nil
+			}
+		}
+		runDaemon(ctx, logger, s, profile, allProfiles, *maxReconnects, *daemonAddr, reload)
 		return
 	}
 

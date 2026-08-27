@@ -86,6 +86,25 @@ func (dc *daemonClient) connect(name string) error {
 	return nil
 }
 
+func (dc *daemonClient) refresh() error {
+	resp, err := dc.client.Post(dc.base+"/refresh", "application/json", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("%s", result.Error)
+	}
+	return nil
+}
+
 func (dc *daemonClient) disconnect() error {
 	resp, err := dc.client.Post(dc.base+"/disconnect", "application/json", nil)
 	if err != nil {
@@ -176,6 +195,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				mConnect := systray.AddMenuItem("Connect", "")
 				mDisconnect := systray.AddMenuItem("Disconnect", "")
 				mDisconnect.Hide()
+				mRefresh := systray.AddMenuItem("Refresh profiles", "")
 				systray.AddSeparator()
 				mQuit := systray.AddMenuItem("Quit", "")
 
@@ -207,6 +227,42 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 								if err := dc.disconnect(); err != nil {
 									logger.Error("disconnect failed", "err", err)
 								}
+							}()
+						case <-mRefresh.ClickedCh:
+							go func() {
+								if err := dc.refresh(); err != nil {
+									logger.Error("refresh failed", "err", err)
+									return
+								}
+								profs, err := dc.profiles()
+								if err != nil {
+									logger.Error("fetch profiles after refresh", "err", err)
+									return
+								}
+								for _, p := range profs.Profiles {
+									exists := false
+									for _, pi := range profileItems {
+										if pi.name == p.Name {
+											exists = true
+											break
+										}
+									}
+									if exists {
+										continue
+									}
+									item := systray.AddMenuItem("    "+p.Name, p.Name)
+									profileItems = append(profileItems, profileItem{name: p.Name, item: item})
+									name := p.Name
+									go func() {
+										for range item.ClickedCh {
+											logger.Info("switching profile", "profile", name)
+											if err := dc.connect(name); err != nil {
+												logger.Error("connect failed", "profile", name, "err", err)
+											}
+										}
+									}()
+								}
+								logger.Info("profiles refreshed", "count", len(profs.Profiles))
 							}()
 						case <-mQuit.ClickedCh:
 							rootCancel()
