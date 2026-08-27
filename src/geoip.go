@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const geoIPBatchURL = "http://ip-api.com/batch?fields=countryCode"
+
 var (
 	countryCache   = make(map[string]string)
 	countryCacheMu sync.RWMutex
@@ -68,11 +70,7 @@ func batchGeoIP(hosts []string) []string {
 
 	body, _ := json.Marshal(ips)
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(
-		"http://ip-api.com/batch?fields=countryCode",
-		"application/json",
-		bytes.NewReader(body),
-	)
+	resp, err := client.Post(geoIPBatchURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil
 	}

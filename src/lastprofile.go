@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,8 +13,13 @@ func lastProfilePath() string {
 
 func saveLastProfile(name string) {
 	p := lastProfilePath()
-	_ = os.MkdirAll(filepath.Dir(p), 0o700)
-	_ = os.WriteFile(p, []byte(name), 0o600)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		slog.Warn("save last profile: mkdir", "err", err)
+		return
+	}
+	if err := os.WriteFile(p, []byte(name), 0o644); err != nil {
+		slog.Warn("save last profile: write", "err", err)
+	}
 }
 
 func loadLastProfile() string {

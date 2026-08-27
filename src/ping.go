@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const pingTimeout = 3 * time.Second
+const pingTimeout = 60 * time.Second
 
 type PingResult struct {
 	Name      string `json:"name"`
