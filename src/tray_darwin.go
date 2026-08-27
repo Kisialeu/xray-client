@@ -12,12 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gen2brain/beeep"
 	"github.com/getlantern/systray"
 )
 
-// Set at build time: go build -ldflags "-X main.appVersion=1.2.3"
-var appVersion = "dev"
 
 // ── icon cache - generated once at startup, never reallocated (issue 7) ───────
 
@@ -46,8 +43,7 @@ func iconDisc() []byte { return cachedIconDisc }
 //	─────────────────────────────
 //	Connect / Disconnect
 //	─────────────────────────────
-//	About…
-//	Quit XRay VPN
+//	Quit
 
 func runTray(ctx context.Context, cancel context.CancelFunc, logger *slog.Logger, s *state, initial Profile, profiles []Profile, maxReconnects int) {
 	systray.Run(
@@ -95,8 +91,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 		mDisconnect := systray.AddMenuItem("Disconnect", "")
 		mDisconnect.Hide()
 		systray.AddSeparator()
-		mAbout := systray.AddMenuItem("About…", "")
-		mQuit := systray.AddMenuItem("Quit XRay VPN", "")
+		mQuit := systray.AddMenuItem("Quit", "")
 
 		// ── currentProfile: written by controller, read by UI ticker ──────
 		// atomic.Pointer gives a safe unsynchronized read. (issue 1)
@@ -331,48 +326,12 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 					case <-ctx.Done():
 						return
 					}
-				case <-mAbout.ClickedCh:
-					go showAbout(s)
 				case <-mQuit.ClickedCh:
 					rootCancel()
 					return
 				}
 			}
 		}()
-	}
-}
-
-// ── about dialog ─────────────────────────────────────────────────────────────
-
-// showAbout shows a native desktop notification via beeep instead of shelling
-// out to osascript directly. beeep still falls back to osascript on macOS
-// internally, but formats the AppleScript string with Go's %q (proper
-// escaping), eliminating the injection risk from interpolating a
-// user-controlled profile name into a raw shell/AppleScript string.
-func showAbout(s *state) {
-	status := "Disconnected"
-	if s.connected.Load() {
-		profile := ""
-		if ap := s.activeProfile.Load(); ap != nil {
-			profile = ap.Name
-		}
-		session := ""
-		if nanos := s.connectedAt.Load(); nanos != 0 {
-			session = formatDuration(time.Since(time.Unix(0, nanos)))
-		}
-		status = fmt.Sprintf("Connected · %s · %s", profile, session)
-	}
-
-	title := fmt.Sprintf("by kslv %s", appVersion)
-	body := fmt.Sprintf(
-		"%s\n↑ %s   ↓ %s",
-		status,
-		humanBytes(float64(s.bytesIn.Load())),
-		humanBytes(float64(s.bytesOut.Load())),
-	)
-
-	if err := beeep.Notify(title, body, ""); err != nil {
-		slog.Default().Error("show about notification", "err", err)
 	}
 }
 
