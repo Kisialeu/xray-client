@@ -175,7 +175,10 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 		}
 		var profileItems []profileItem
 
-		formatProfileTitle := func(prefix, name string, latencyMs int) string {
+		formatProfileTitle := func(prefix, name string, latencyMs int, flag string) string {
+			if flag != "" {
+				name = flag + " " + name
+			}
 			if latencyMs > 0 {
 				return fmt.Sprintf("%s%s  (%dms)", prefix, name, latencyMs)
 			}
@@ -186,17 +189,21 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 		}
 
 		latencies := make(map[string]int)
+		flags := make(map[string]string)
 
-		updateLatencies := func(results []PingResult) {
+		updatePingResults := func(results []PingResult) {
 			for _, r := range results {
 				latencies[r.Name] = r.LatencyMs
+				if r.Flag != "" {
+					flags[r.Name] = r.Flag
+				}
 			}
 			for _, pi := range profileItems {
 				lat, ok := latencies[pi.name]
 				if !ok {
 					lat = -1
 				}
-				pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat))
+				pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
 			}
 		}
 
@@ -232,7 +239,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				// Ping servers in background to show latency
 				go func() {
 					if results, err := dc.ping(); err == nil {
-						updateLatencies(results)
+						updatePingResults(results)
 					}
 				}()
 
@@ -311,7 +318,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 								}
 								logger.Info("profiles refreshed", "count", len(profs.Profiles))
 								if results, err := dc.ping(); err == nil {
-									updateLatencies(results)
+									updatePingResults(results)
 								}
 							}()
 						case <-mQuit.ClickedCh:
@@ -366,15 +373,25 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 							prevIn, prevOut = st.BytesIn, st.BytesOut
 
 							if st.Connected {
-								systray.SetTemplateIcon(iconConn(), iconConn())
-
 								pName := st.ActiveProfile
+								if f := flags[pName]; f != "" {
+									if icon := renderEmojiIcon(f, 22); icon != nil {
+										systray.SetIcon(icon)
+									}
+								} else {
+									systray.SetTemplateIcon(iconConn(), iconConn())
+								}
 								session := ""
 								if st.UptimeS > 0 {
 									session = formatDuration(time.Duration(st.UptimeS) * time.Second)
 								}
 
-								status := "🟢  " + pName
+								flagStr := flags[pName]
+								status := "🟢  "
+								if flagStr != "" {
+									status += flagStr + " "
+								}
+								status += pName
 								bw := fmt.Sprintf(" ↓ %s/s   ↑ %s/s", humanBytes(rxRate), humanBytes(txRate))
 								tot := fmt.Sprintf(" Total ↑ %s   ↓ %s", humanBytes(float64(st.BytesIn)), humanBytes(float64(st.BytesOut)))
 
@@ -409,11 +426,8 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 										if !ok {
 											lat = -1
 										}
-										if pi.name == pName {
-											pi.item.SetTitle(formatProfileTitle("  ✓ ", pi.name, lat))
-										} else {
-											pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat))
-										}
+                                        pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
+
 									}
 									prevActiveName = pName
 								}
@@ -436,7 +450,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 										if !ok {
 											lat = -1
 										}
-										pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat))
+										pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
 									}
 									prevActiveName = ""
 								}

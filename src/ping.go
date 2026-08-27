@@ -15,23 +15,44 @@ const pingTimeout = 3 * time.Second
 type PingResult struct {
 	Name      string `json:"name"`
 	LatencyMs int    `json:"latency_ms"`
+	Country   string `json:"country,omitempty"`
+	Flag      string `json:"flag,omitempty"`
 }
 
 func pingProfiles(profiles []Profile) []PingResult {
 	results := make([]PingResult, len(profiles))
-	var wg sync.WaitGroup
 
+	hostports := make([]string, len(profiles))
+	for i, p := range profiles {
+		hostports[i] = extractHostPort(p.Link)
+	}
+
+	var nonEmpty []string
+	for _, hp := range hostports {
+		if hp != "" {
+			nonEmpty = append(nonEmpty, hp)
+		}
+	}
+	countries := resolveCountries(nonEmpty)
+
+	var wg sync.WaitGroup
 	for i, p := range profiles {
 		wg.Add(1)
 		go func(idx int, prof Profile) {
 			defer wg.Done()
+			hp := hostports[idx]
 			results[idx] = PingResult{Name: prof.Name, LatencyMs: -1}
-			hostport := extractHostPort(prof.Link)
-			if hostport == "" {
+
+			if cc := countries[hp]; cc != "" {
+				results[idx].Country = cc
+				results[idx].Flag = countryFlag(cc)
+			}
+
+			if hp == "" {
 				return
 			}
 			start := time.Now()
-			conn, err := net.DialTimeout("tcp", hostport, pingTimeout)
+			conn, err := net.DialTimeout("tcp", hp, pingTimeout)
 			if err != nil {
 				return
 			}
