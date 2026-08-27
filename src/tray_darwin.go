@@ -221,7 +221,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 						}
 
 						status := "🟢  " + pName
-						bw := fmt.Sprintf(" ↓ %s/s   ↑ %s/s", humanBytes(rxRate), humanBytes(txRate))
+						bw := fmt.Sprintf(" ↑ %s/s   ↓ %s/s", humanBytes(rxRate), humanBytes(txRate))
 						tot := fmt.Sprintf(" Total ↑ %s   ↓ %s", humanBytes(float64(in)), humanBytes(float64(out)))
 
 						if status != prevStatus {
