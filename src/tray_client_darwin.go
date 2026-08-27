@@ -250,8 +250,6 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				mDisconnect := systray.AddMenuItem("Disconnect", "")
 				mDisconnect.Hide()
 				mRefresh := systray.AddMenuItem("Refresh profiles", "")
-				systray.AddSeparator()
-				mQuit := systray.AddMenuItem("Quit", "")
 
 				// Event loop
 				go func() {
@@ -321,9 +319,6 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									updatePingResults(results)
 								}
 							}()
-						case <-mQuit.ClickedCh:
-							rootCancel()
-							return
 						}
 					}
 				}()

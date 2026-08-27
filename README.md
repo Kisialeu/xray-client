@@ -6,7 +6,11 @@ XRay VPN client in Go.
 - Auto-reconnect with exponential backoff (2 s → 60 s, capped, configurable attempt limit)
 - Subscription URL support — fetch profiles from a remote base64-encoded subscription endpoint (compatible with v2rayNG, Shadowrocket, etc.)
 - Multi-profile config support (`.yaml` with named profiles, subscription URL, or a plain `.txt` link file)
-- macOS menu bar app (`--tray`) — icon changes on connect/disconnect, live ↓RX/↑TX in menu, profile switching
+- macOS menu bar app (`--tray`) — country flag icon, live bandwidth, profile switching, server ping latency
+- Server ping — TCP latency measurement for all profiles, shown inline in tray menu
+- GeoIP country flags — automatic server location detection via ip-api.com, flag emoji as menu bar icon
+- Profile refresh — re-fetch subscription profiles without restarting
+- Remembers last profile — reconnects to the last-used profile on restart
 - Daemon + tray client split — root daemon for VPN, user-level tray for UI, communicate over HTTP
 - HTTP status server — `/health` and `/status` (JSON metrics)
 
@@ -90,7 +94,9 @@ Inline profiles take priority over subscription profiles with the same name or l
 sudo ./xray-cli --config servers.yaml --tray
 ```
 
-The menu shows connection status, session duration, live bandwidth, profile switching, and connect/disconnect controls.
+The tray shows connection status with country flag icon, session duration, live bandwidth, server ping latency, and profile switching.
+
+![macOS tray menu](assets/tray-screenshot.png)
 
 ### Daemon + tray client (autostart with tray icon)
 
@@ -113,8 +119,10 @@ xray-cli --tray --daemon-addr 127.0.0.1:19099
 - `GET /health` — 200 / 503
 - `GET /status` — JSON: connected, active_profile, bytes_in/out, reconnects
 - `GET /profiles` — available profiles + which is active
+- `GET /ping` — TCP latency + GeoIP country for each profile
 - `POST /connect` — `{"profile": "name"}` to switch
 - `POST /disconnect` — stop VPN
+- `POST /refresh` — re-fetch subscription profiles
 
 **Install as launchd services:**
 
@@ -138,7 +146,7 @@ sudo ./setup-macos.sh uninstall  # remove everything
 
 ### Known limitation: unclean shutdown leaves routes behind
 
-If the process is killed with `SIGKILL` (`kill -9`), route cleanup doesn't run. If you see `add route: ... file exists` on the next start:
+If the process is killed with `SIGKILL` (`kill -9`), route cleanup doesn't run. This is a fundamental OS limitation — `SIGKILL` cannot be caught by any process, so Go's signal handler never executes. If you see `add route: ... file exists` on the next start:
 
 ```bash
 ps aux | grep xray-cli            # find and kill any stale instances
