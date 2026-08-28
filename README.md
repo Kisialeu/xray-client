@@ -11,6 +11,8 @@ XRay VPN client in Go.
 - GeoIP country flags — automatic server location detection via ip-api.com, flag emoji as menu bar icon
 - Profile refresh — re-fetch subscription profiles without restarting
 - Remembers last profile — reconnects to the last-used profile on restart
+- Server info panel — public IP, exit country, protocol, DNS server, IP leak detection (auto-refreshes every 60 s)
+- DNS leak protection — `--dns` flag or `dns:` config overrides macOS DNS on connect, restored on disconnect
 - Daemon + tray client split — root daemon for VPN, user-level tray for UI, communicate over HTTP
 - HTTP status server — `/health` and `/status` (JSON metrics)
 
@@ -45,6 +47,7 @@ Requires Go 1.26+. `--tray` requires macOS with `CGO_ENABLED=1` (the default for
 | `--subscribe` | — | Subscription URL — fetches a base64-encoded list of proxy links |
 | `--profile` | — | Named profile to use from a `.yaml` config or subscription |
 | `--list-profiles` | `false` | Print available profiles and exit |
+| `--dns` | `""` | Override DNS on connect (comma-separated, e.g. `1.1.1.1,8.8.8.8`). Routes DNS through VPN tunnel. |
 | `--daemon-addr` | `""` | Run as daemon with HTTP control API; combine with `--tray` for client-only tray |
 | `--status` | `""` | HTTP status server bind address, e.g. `127.0.0.1:9999` |
 | `--verbose` | `false` | Log bandwidth stats every 10 s |
@@ -65,6 +68,7 @@ sudo ./xray-cli --link "vless://..."
 ```yaml
 subscription: "https://sub.example.com/token"  # optional remote profiles
 default: home   # optional; falls back to the first entry if omitted
+dns: [1.1.1.1, 8.8.8.8]  # optional: override DNS on connect (prevents DNS leak)
 
 profiles:
   - name: home
@@ -120,6 +124,7 @@ xray-cli --tray --daemon-addr 127.0.0.1:19099
 - `GET /status` — JSON: connected, active_profile, bytes_in/out, reconnects
 - `GET /profiles` — available profiles + which is active
 - `GET /ping` — TCP latency + GeoIP country for each profile
+- `GET /server-info` — public IP, exit country, protocol, DNS server, IP leak check
 - `POST /connect` — `{"profile": "name"}` to switch
 - `POST /disconnect` — stop VPN
 - `POST /refresh` — re-fetch subscription profiles
@@ -141,6 +146,23 @@ sudo ./setup-macos.sh start      # start services
 sudo ./setup-macos.sh restart    # restart services
 sudo ./setup-macos.sh uninstall  # remove everything
 ```
+
+---
+
+### DNS leak protection
+
+By default, DNS queries go to your ISP's resolver even when VPN is active. The `--dns` flag (or `dns:` in YAML config) overrides macOS DNS settings on connect so queries route through the VPN tunnel:
+
+```bash
+sudo xray-cli --config servers.yaml --daemon-addr 127.0.0.1:19099 --dns 1.1.1.1,8.8.8.8
+```
+
+Or in config:
+```yaml
+dns: [1.1.1.1, 8.8.8.8]
+```
+
+The `--dns` flag takes precedence over the config file. Original DNS is restored on disconnect. The DNS cache is flushed on both transitions.
 
 ---
 
