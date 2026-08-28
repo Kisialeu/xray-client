@@ -119,7 +119,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 				done = d
 				go func() {
 					defer close(d)
-					runWithReconnect(vpnCtx, logger, s, p, maxReconnects)
+					runWithReconnect(vpnCtx, logger, s, p, maxReconnects, nil)
 				}()
 			}
 

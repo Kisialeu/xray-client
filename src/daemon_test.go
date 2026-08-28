@@ -33,7 +33,7 @@ func startTestDaemon(t *testing.T) (addr string, s *state, cancel context.Cancel
 	cancel = c
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	go runDaemon(ctx, logger, s, initial, profiles, 1, addr, nil)
+	go runDaemon(ctx, logger, s, initial, profiles, 1, addr, nil, nil)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -313,7 +313,7 @@ func startTestDaemonWithReload(t *testing.T, reload reloadFunc) (addr string, s 
 	cancel = c
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	go runDaemon(ctx, logger, s, initial, profiles, 1, addr, reload)
+	go runDaemon(ctx, logger, s, initial, profiles, 1, addr, reload, nil)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

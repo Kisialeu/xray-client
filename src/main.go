@@ -130,6 +130,7 @@ func runWithReconnect(
 	s *state,
 	profile Profile,
 	maxAttempts int,
+	dnsServers []string,
 ) {
 	attempt := 0
 	var vpn *Client
@@ -138,6 +139,7 @@ func runWithReconnect(
 			var err error
 			vpn, err = NewClientWithOpts(Config{
 				TLSAllowInsecure: profile.TLSInsecure,
+				DNSServers:       dnsServers,
 				Logger:           logger,
 			})
 			if err != nil {
@@ -256,6 +258,8 @@ FLAGS
   --verbose         Log bandwidth stats every 10 s
   --log     <lvl>   Log level: debug|info|warn|error  (default: info)
   --tray            macOS menu bar mode (default: on for darwin, off elsewhere)
+  --dns     <list>  Override DNS on connect (comma-separated, e.g. 1.1.1.1,8.8.8.8)
+                      Routes DNS queries through the VPN tunnel. Restored on disconnect.
   --tls-insecure    Allow self-signed TLS certificates
   --max-reconnects  Max reconnect attempts, 0 = unlimited (default: 0)
   --help            Show this help
@@ -308,6 +312,7 @@ func main() {
 	logLevel := fs.String("log", "info", "")
 	tlsInsecure := fs.Bool("tls-insecure", false, "")
 	maxReconnects := fs.Int("max-reconnects", 0, "")
+	dnsFlag := fs.String("dns", "", "")
 	daemonAddr := fs.String("daemon-addr", "", "")
 	tray := fs.Bool("tray", defaultTray, "")
 	help := fs.Bool("help", false, "")
@@ -424,6 +429,15 @@ func main() {
 		}
 	}
 
+	var dnsServers []string
+	if *dnsFlag != "" {
+		for _, s := range strings.Split(*dnsFlag, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				dnsServers = append(dnsServers, s)
+			}
+		}
+	}
+
 	s := &state{link: profile.Link, startAt: time.Now()}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -475,7 +489,7 @@ func main() {
 				return all, nil
 			}
 		}
-		runDaemon(ctx, logger, s, profile, allProfiles, *maxReconnects, *daemonAddr, reload)
+		runDaemon(ctx, logger, s, profile, allProfiles, *maxReconnects, *daemonAddr, reload, dnsServers)
 		return
 	}
 
@@ -493,7 +507,7 @@ func main() {
 		startBandwidthPrinter(ctx, logger, s)
 	}
 
-	runWithReconnect(ctx, logger, s, profile, *maxReconnects)
+	runWithReconnect(ctx, logger, s, profile, *maxReconnects, dnsServers)
 }
 
 func buildLogger(level string) *slog.Logger {

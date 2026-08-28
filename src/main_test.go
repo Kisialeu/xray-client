@@ -284,7 +284,7 @@ func TestRunWithReconnect_StopsOnContextCancel(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runWithReconnect(ctx, logger, s, profile, 0)
+		runWithReconnect(ctx, logger, s, profile, 0, nil)
 		close(done)
 	}()
 
@@ -305,7 +305,7 @@ func TestRunWithReconnect_MaxAttemptsRespected(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runWithReconnect(ctx, logger, s, profile, 1)
+		runWithReconnect(ctx, logger, s, profile, 1, nil)
 		close(done)
 	}()
 
@@ -326,7 +326,7 @@ func TestRunWithReconnect_ReconnectCountIncremented(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runWithReconnect(ctx, logger, s, profile, 2)
+		runWithReconnect(ctx, logger, s, profile, 2, nil)
 		close(done)
 	}()
 

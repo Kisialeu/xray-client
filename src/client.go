@@ -47,6 +47,7 @@ type Config struct {
 	TUNAddress       *net.IPNet
 	RoutesToTUN      []*route.Addr
 	TLSAllowInsecure bool
+	DNSServers       []string
 	Logger           *slog.Logger
 	XRayLogType      xapplog.LogType
 }
@@ -66,6 +67,9 @@ func (c *Config) apply(new *Config) {
 	}
 	if new.RoutesToTUN != nil {
 		c.RoutesToTUN = new.RoutesToTUN
+	}
+	if new.DNSServers != nil {
+		c.DNSServers = new.DNSServers
 	}
 	if new.XRayLogType != xapplog.LogType_None {
 		c.XRayLogType = new.XRayLogType
@@ -89,6 +93,7 @@ type Client struct {
 	tunIfaceName  string
 	tunRouteAdded bool
 	xrayRouteAdded bool
+	dnsState       *dnsOverride
 
 	tunnelStopped chan error
 	stopTunnel    func()
@@ -232,6 +237,11 @@ func (c *Client) Connect(link string) error {
 	}
 	c.xrayRouteAdded = true
 
+	if len(c.cfg.DNSServers) > 0 {
+		c.dnsState = overrideDNS(c.cfg.DNSServers, c.cfg.Logger)
+		rollback = append(rollback, func() error { c.dnsState.restore(c.cfg.Logger); return nil })
+	}
+
 	c.tunnelStopped = make(chan error, 1)
 	var ctx context.Context
 	ctx, c.stopTunnel = context.WithCancel(context.Background())
@@ -272,16 +282,19 @@ func (c *Client) Disconnect(ctx context.Context) error {
 	tunIfaceName := c.tunIfaceName
 	tunRouteAdded := c.tunRouteAdded
 	tunRoutes := c.cfg.RoutesToTUN
+	dnsState := c.dnsState
 
 	c.xInst, c.tunnel, c.stopTunnel, c.tunnelStopped = nil, nil, nil, nil
 	c.metrics.Store(nil)
 	c.xrayRouteAdded = false
 	c.tunRouteAdded = false
+	c.dnsState = nil
 	c.state = stateIdle
 
 	c.mu.Unlock()
 
 	// Slow path — no lock held.
+	dnsState.restore(c.cfg.Logger)
 	stopFn()
 
 	var errs []error
