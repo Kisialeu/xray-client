@@ -200,6 +200,21 @@ func runDaemon(
 		_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
 	})
 
+	mux.HandleFunc("/server-info", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ap := s.activeProfile.Load()
+		if ap == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "not connected"})
+			return
+		}
+		info := gatherServerInfo(*ap)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(info)
+	})
+
 	mux.HandleFunc("/refresh", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
