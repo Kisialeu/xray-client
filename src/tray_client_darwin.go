@@ -280,7 +280,39 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				mInfoDNS.Disable()
 				mInfoLeak := systray.AddMenuItem("    IP Leak: —", "")
 				mInfoLeak.Disable()
-				mCheckServer := systray.AddMenuItem("Check server", "")
+
+				updateServerInfo := func() {
+					info, err := dc.serverInfo()
+					if err != nil {
+						logger.Debug("server info fetch failed", "err", err)
+						return
+					}
+					if info.PublicIP != "" {
+						mInfoIP.SetTitle("    IP: " + info.PublicIP)
+					}
+					if info.Flag != "" {
+						mInfoCountry.SetTitle("    Location: " + info.Flag + " " + info.Country)
+					} else {
+						mInfoCountry.SetTitle("    Location: —")
+					}
+					mInfoProto.SetTitle("    Protocol: " + info.Protocol)
+					if info.DNSServer != "" {
+						mInfoDNS.SetTitle("    DNS: " + info.DNSServer)
+					}
+					if info.IPLeak {
+						mInfoLeak.SetTitle("    IP Leak: ⚠ DETECTED")
+					} else {
+						mInfoLeak.SetTitle("    IP Leak: ✓ None")
+					}
+				}
+
+				serverInfoCh := make(chan struct{}, 1)
+				triggerServerInfo := func() {
+					select {
+					case serverInfoCh <- struct{}{}:
+					default:
+					}
+				}
 
 				// Event loop
 				go func() {
@@ -350,33 +382,24 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									updatePingResults(results)
 								}
 							}()
-						case <-mCheckServer.ClickedCh:
-							go func() {
-								mCheckServer.SetTitle("Checking…")
-								info, err := dc.serverInfo()
-								if err != nil {
-									mCheckServer.SetTitle("Check server")
-									mInfoIP.SetTitle("    IP: error")
-									logger.Error("server info failed", "err", err)
-									return
-								}
-								if info.PublicIP != "" {
-									mInfoIP.SetTitle("    IP: " + info.PublicIP)
-								}
-								if info.Flag != "" {
-									mInfoCountry.SetTitle("    Location: " + info.Flag + " " + info.Country)
-								}
-								mInfoProto.SetTitle("    Protocol: " + info.Protocol)
-								if info.DNSServer != "" {
-									mInfoDNS.SetTitle("    DNS: " + info.DNSServer)
-								}
-								if info.IPLeak {
-									mInfoLeak.SetTitle("    IP Leak: ⚠ DETECTED")
-								} else {
-									mInfoLeak.SetTitle("    IP Leak: ✓ None")
-								}
-								mCheckServer.SetTitle("Check server")
-							}()
+						}
+					}
+				}()
+
+				// Server info auto-refresh: on signal or every 60s while connected
+				go func() {
+					const serverInfoInterval = 60 * time.Second
+					t := time.NewTicker(serverInfoInterval)
+					defer t.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-serverInfoCh:
+							updateServerInfo()
+							t.Reset(serverInfoInterval)
+						case <-t.C:
+							updateServerInfo()
 						}
 					}
 				}()
@@ -471,9 +494,11 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									mTotals.Show()
 									mConnect.Hide()
 									mDisconnect.Show()
+									triggerServerInfo()
 								}
 
 								if pName != prevActiveName {
+									triggerServerInfo()
 									for _, pi := range profileItems {
 										lat, ok := latencies[pi.name]
 										if !ok {
@@ -498,6 +523,11 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									mTotals.Hide()
 									mDisconnect.Hide()
 									mConnect.Show()
+									mInfoIP.SetTitle("    IP: —")
+									mInfoCountry.SetTitle("    Location: —")
+									mInfoProto.SetTitle("    Protocol: —")
+									mInfoDNS.SetTitle("    DNS: —")
+									mInfoLeak.SetTitle("    IP Leak: —")
 									for _, pi := range profileItems {
 										lat, ok := latencies[pi.name]
 										if !ok {
