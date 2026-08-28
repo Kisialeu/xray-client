@@ -120,6 +120,22 @@ func (dc *daemonClient) ping() ([]PingResult, error) {
 	return result.Results, nil
 }
 
+func (dc *daemonClient) serverInfo() (*ServerInfo, error) {
+	resp, err := dc.client.Get(dc.base + "/server-info")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server-info: status %d", resp.StatusCode)
+	}
+	var info ServerInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 func (dc *daemonClient) disconnect() error {
 	resp, err := dc.client.Post(dc.base+"/disconnect", "application/json", nil)
 	if err != nil {
@@ -250,6 +266,21 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				mDisconnect := systray.AddMenuItem("Disconnect", "")
 				mDisconnect.Hide()
 				mRefresh := systray.AddMenuItem("Refresh profiles", "")
+				systray.AddSeparator()
+
+				mServerInfoLabel := systray.AddMenuItem("Server Info", "")
+				mServerInfoLabel.Disable()
+				mInfoIP := systray.AddMenuItem("    IP: —", "")
+				mInfoIP.Disable()
+				mInfoCountry := systray.AddMenuItem("    Location: —", "")
+				mInfoCountry.Disable()
+				mInfoProto := systray.AddMenuItem("    Protocol: —", "")
+				mInfoProto.Disable()
+				mInfoDNS := systray.AddMenuItem("    DNS: —", "")
+				mInfoDNS.Disable()
+				mInfoLeak := systray.AddMenuItem("    IP Leak: —", "")
+				mInfoLeak.Disable()
+				mCheckServer := systray.AddMenuItem("Check server", "")
 
 				// Event loop
 				go func() {
@@ -318,6 +349,33 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 								if results, err := dc.ping(); err == nil {
 									updatePingResults(results)
 								}
+							}()
+						case <-mCheckServer.ClickedCh:
+							go func() {
+								mCheckServer.SetTitle("Checking…")
+								info, err := dc.serverInfo()
+								if err != nil {
+									mCheckServer.SetTitle("Check server")
+									mInfoIP.SetTitle("    IP: error")
+									logger.Error("server info failed", "err", err)
+									return
+								}
+								if info.PublicIP != "" {
+									mInfoIP.SetTitle("    IP: " + info.PublicIP)
+								}
+								if info.Flag != "" {
+									mInfoCountry.SetTitle("    Location: " + info.Flag + " " + info.Country)
+								}
+								mInfoProto.SetTitle("    Protocol: " + info.Protocol)
+								if info.DNSServer != "" {
+									mInfoDNS.SetTitle("    DNS: " + info.DNSServer)
+								}
+								if info.IPLeak {
+									mInfoLeak.SetTitle("    IP Leak: ⚠ DETECTED")
+								} else {
+									mInfoLeak.SetTitle("    IP Leak: ✓ None")
+								}
+								mCheckServer.SetTitle("Check server")
 							}()
 						}
 					}
