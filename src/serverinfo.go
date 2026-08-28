@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -37,20 +38,17 @@ func gatherServerInfo(profile Profile) ServerInfo {
 	}
 
 	if info.PublicIP != "" {
-		codes := batchGeoIP([]string{info.PublicIP})
-		if len(codes) > 0 && codes[0] != "" {
-			info.Country = codes[0]
-			info.Flag = countryFlag(codes[0])
-		}
+		info.Country, info.Flag = geoIPSingle(client, info.PublicIP)
 
 		serverHost, _, _ := net.SplitHostPort(info.Server)
 		if serverHost == "" {
 			serverHost = info.Server
 		}
+		info.IPLeak = true
 		if addrs, err := net.LookupHost(serverHost); err == nil {
 			for _, addr := range addrs {
 				if addr == info.PublicIP {
-					info.IPLeak = true
+					info.IPLeak = false
 					break
 				}
 			}
@@ -62,6 +60,21 @@ func gatherServerInfo(profile Profile) ServerInfo {
 	}
 
 	return info
+}
+
+func geoIPSingle(client *http.Client, ip string) (country, flag string) {
+	resp, err := client.Get("https://ipinfo.io/" + ip + "/json")
+	if err != nil {
+		return "", ""
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Country string `json:"country"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) == nil && result.Country != "" {
+		return result.Country, countryFlag(result.Country)
+	}
+	return "", ""
 }
 
 func extractProtocol(link string) string {
