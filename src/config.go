@@ -21,6 +21,7 @@ type Profile struct {
 type configFile struct {
 	Default      string    `yaml:"default"`
 	Subscription string    `yaml:"subscription"`
+	DNS          []string  `yaml:"dns"`
 	Profiles     []Profile `yaml:"profiles"`
 }
 

@@ -267,6 +267,7 @@ FLAGS
 YAML CONFIG FORMAT
   subscription: "https://sub.example.com/token"  # optional
   default: home          # optional default profile name
+  dns: [1.1.1.1, 8.8.8.8]  # optional: override DNS on connect (--dns flag wins)
 
   profiles:              # inline profiles (override subscription on name clash)
     - name: home
@@ -435,6 +436,11 @@ func main() {
 			if s = strings.TrimSpace(s); s != "" {
 				dnsServers = append(dnsServers, s)
 			}
+		}
+	}
+	if len(dnsServers) == 0 && *configPath != "" && isYAML(*configPath) {
+		if cfg, err := parseYAMLConfig(*configPath); err == nil && len(cfg.DNS) > 0 {
+			dnsServers = cfg.DNS
 		}
 	}
 
