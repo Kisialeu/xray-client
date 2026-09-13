@@ -400,24 +400,24 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 	return func() {
 		dc := newDaemonClient(addr)
 
-		systray.SetTemplateIcon(iconDisc(), iconDisc())
+		traySetTemplateIcon(iconDisc(), iconDisc())
 		systray.SetTooltip("XRay VPN")
 
 		mStatusLine := systray.AddMenuItem("⚫  Connecting to daemon…", "")
-		mStatusLine.Disable()
+		trayDisable(mStatusLine)
 		mSession := systray.AddMenuItem("", "")
-		mSession.Disable()
-		mSession.Hide()
+		trayDisable(mSession)
+		trayHide(mSession)
 		mBandwidth := systray.AddMenuItem("", "")
-		mBandwidth.Disable()
-		mBandwidth.Hide()
+		trayDisable(mBandwidth)
+		trayHide(mBandwidth)
 		mTotals := systray.AddMenuItem("", "")
-		mTotals.Disable()
-		mTotals.Hide()
+		trayDisable(mTotals)
+		trayHide(mTotals)
 		systray.AddSeparator()
 
 		mProfilesLabel := systray.AddMenuItem("Profiles", "")
-		mProfilesLabel.Disable()
+		trayDisable(mProfilesLabel)
 
 		profileState := newTrayClientProfileState()
 		var selectedProfile atomic.Value
@@ -455,7 +455,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				if pi.latencyKnown {
 					lat = pi.latency
 				}
-				pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, pi.flag))
+				traySetTitle(pi.item, formatProfileTitle("    ", pi.name, lat, pi.flag))
 			}
 		}
 
@@ -520,11 +520,11 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				mConnect := systray.AddMenuItem("Connect selected profile", "")
 				mReconnect := systray.AddMenuItem("Reconnect now", "")
 				mDisconnect := systray.AddMenuItem("Disconnect and stop", "")
-				mDisconnect.Hide()
+				trayHide(mDisconnect)
 				mRefresh := systray.AddMenuItem("Refresh profiles", "")
 				systray.AddSeparator()
 				mSettingsLabel := systray.AddMenuItem("Connection Settings", "")
-				mSettingsLabel.Disable()
+				trayDisable(mSettingsLabel)
 				mAutoConnect := systray.AddMenuItem("", "")
 				mAutoReconnect := systray.AddMenuItem("", "")
 				setSettingTitle := func(item *systray.MenuItem, name string, enabled bool) {
@@ -532,24 +532,24 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 					if enabled {
 						prefix = "  ✓ "
 					}
-					item.SetTitle(prefix + name)
+					traySetTitle(item, prefix+name)
 				}
 				setSettingTitle(mAutoConnect, "Auto-connect", currentSettings.Load().(ConnectionSettings).AutoConnect)
 				setSettingTitle(mAutoReconnect, "Auto-reconnect", currentSettings.Load().(ConnectionSettings).AutoReconnect)
 				systray.AddSeparator()
 
 				mServerInfoLabel := systray.AddMenuItem("Server Info", "")
-				mServerInfoLabel.Disable()
+				trayDisable(mServerInfoLabel)
 				mInfoIP := systray.AddMenuItem("    IP: —", "")
-				mInfoIP.Disable()
+				trayDisable(mInfoIP)
 				mInfoCountry := systray.AddMenuItem("    Location: —", "")
-				mInfoCountry.Disable()
+				trayDisable(mInfoCountry)
 				mInfoProto := systray.AddMenuItem("    Protocol: —", "")
-				mInfoProto.Disable()
+				trayDisable(mInfoProto)
 				mInfoDNS := systray.AddMenuItem("    DNS: —", "")
-				mInfoDNS.Disable()
+				trayDisable(mInfoDNS)
 				mInfoLeak := systray.AddMenuItem("    IP Leak: —", "")
-				mInfoLeak.Disable()
+				trayDisable(mInfoLeak)
 
 				updateServerInfo := func() {
 					info, err := dc.serverInfo(ctx)
@@ -558,18 +558,18 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 						return
 					}
 					if info.PublicIP != "" {
-						mInfoIP.SetTitle("    IP: " + info.PublicIP)
+						traySetTitle(mInfoIP, "    IP: "+info.PublicIP)
 					}
 					if info.Flag != "" {
-						mInfoCountry.SetTitle("    Location: " + info.Flag + " " + info.Country)
+						traySetTitle(mInfoCountry, "    Location: "+info.Flag+" "+info.Country)
 					} else {
-						mInfoCountry.SetTitle("    Location: —")
+						traySetTitle(mInfoCountry, "    Location: —")
 					}
-					mInfoProto.SetTitle("    Protocol: " + info.Protocol)
+					traySetTitle(mInfoProto, "    Protocol: "+info.Protocol)
 					if info.DNSServer != "" {
-						mInfoDNS.SetTitle("    DNS: " + info.DNSServer)
+						traySetTitle(mInfoDNS, "    DNS: "+info.DNSServer)
 					}
-					mInfoLeak.SetTitle("    Leak protection: not measured")
+					traySetTitle(mInfoLeak, "    Leak protection: not measured")
 				}
 
 				serverInfoCh := make(chan struct{}, 1)
@@ -641,7 +641,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									if p.Flag != "" {
 										title = "    " + p.Flag + " " + p.Name
 									}
-									item.SetTitle(title)
+									traySetTitle(item, title)
 									if !profileState.add(trayClientProfileItem{name: p.Name, flag: p.Flag, item: item}) {
 										continue
 									}
@@ -709,14 +709,14 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 							st, err := dc.status(ctx)
 							if err != nil {
 								if daemonOnline {
-									systray.SetTemplateIcon(iconDisc(), iconDisc())
-									mStatusLine.SetTitle("⚫  Daemon offline")
+									traySetTemplateIcon(iconDisc(), iconDisc())
+									traySetTitle(mStatusLine, "⚫  Daemon offline")
 									prevStatus = "⚫  Daemon offline"
-									mSession.Hide()
-									mBandwidth.Hide()
-									mTotals.Hide()
-									mDisconnect.Hide()
-									mConnect.Show()
+									trayHide(mSession)
+									trayHide(mBandwidth)
+									trayHide(mTotals)
+									trayHide(mDisconnect)
+									trayShow(mConnect)
 									daemonOnline = false
 									prevConnected = false
 								}
@@ -746,10 +746,10 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 								pName := st.ActiveProfile
 								if f := profileState.flag(pName); f != "" {
 									if icon := renderEmojiIcon(f, 22); icon != nil {
-										systray.SetIcon(icon)
+										traySetIcon(icon)
 									}
 								} else {
-									systray.SetTemplateIcon(iconConn(), iconConn())
+									traySetTemplateIcon(iconConn(), iconConn())
 								}
 								session := ""
 								if st.UptimeS > 0 {
@@ -766,28 +766,28 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 								tot := fmt.Sprintf(" Total ↑ %s   ↓ %s", humanBytes(float64(st.BytesIn)), humanBytes(float64(st.BytesOut)))
 
 								if status != prevStatus {
-									mStatusLine.SetTitle(status)
+									traySetTitle(mStatusLine, status)
 									prevStatus = status
 								}
 								if session != prevSession {
-									mSession.SetTitle("⏱  " + session)
+									traySetTitle(mSession, "⏱  "+session)
 									prevSession = session
 								}
 								if bw != prevBandwidth {
-									mBandwidth.SetTitle(bw)
+									traySetTitle(mBandwidth, bw)
 									prevBandwidth = bw
 								}
 								if tot != prevTotals {
-									mTotals.SetTitle(tot)
+									traySetTitle(mTotals, tot)
 									prevTotals = tot
 								}
 
 								if !prevConnected {
-									mSession.Show()
-									mBandwidth.Show()
-									mTotals.Show()
-									mConnect.Hide()
-									mDisconnect.Show()
+									trayShow(mSession)
+									trayShow(mBandwidth)
+									trayShow(mTotals)
+									trayHide(mConnect)
+									trayShow(mDisconnect)
 									triggerServerInfo()
 								}
 
@@ -798,17 +798,17 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 										if pi.latencyKnown {
 											lat = pi.latency
 										}
-										pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, pi.flag))
+										traySetTitle(pi.item, formatProfileTitle("    ", pi.name, lat, pi.flag))
 
 									}
 									prevActiveName = pName
 								}
 							} else {
-								systray.SetTemplateIcon(iconDisc(), iconDisc())
+								traySetTemplateIcon(iconDisc(), iconDisc())
 								if statusValue == statusConnecting || statusValue == statusReconnecting {
-									mDisconnect.Show()
+									trayShow(mDisconnect)
 								} else {
-									mDisconnect.Hide()
+									trayHide(mDisconnect)
 								}
 
 								statusTitle := "⚫  Disconnected"
@@ -821,28 +821,28 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									statusTitle = "🔴  Operation failed"
 								}
 								if statusTitle != prevStatus {
-									mStatusLine.SetTitle(statusTitle)
+									traySetTitle(mStatusLine, statusTitle)
 									prevStatus = statusTitle
 								}
 
 								if prevConnected {
-									mSession.Hide()
-									mBandwidth.Hide()
-									mTotals.Hide()
-									mDisconnect.Hide()
-									mConnect.Show()
-									mReconnect.Show()
-									mInfoIP.SetTitle("    IP: —")
-									mInfoCountry.SetTitle("    Location: —")
-									mInfoProto.SetTitle("    Protocol: —")
-									mInfoDNS.SetTitle("    DNS: —")
-									mInfoLeak.SetTitle("    IP Leak: —")
+									trayHide(mSession)
+									trayHide(mBandwidth)
+									trayHide(mTotals)
+									trayHide(mDisconnect)
+									trayShow(mConnect)
+									trayShow(mReconnect)
+									traySetTitle(mInfoIP, "    IP: —")
+									traySetTitle(mInfoCountry, "    Location: —")
+									traySetTitle(mInfoProto, "    Protocol: —")
+									traySetTitle(mInfoDNS, "    DNS: —")
+									traySetTitle(mInfoLeak, "    IP Leak: —")
 									for _, pi := range profileState.snapshot() {
 										lat := -1
 										if pi.latencyKnown {
 											lat = pi.latency
 										}
-										pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, pi.flag))
+										traySetTitle(pi.item, formatProfileTitle("    ", pi.name, lat, pi.flag))
 									}
 									prevActiveName = ""
 								}
