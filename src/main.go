@@ -39,6 +39,7 @@ func init() {
 type state struct {
 	link          string
 	connected     atomic.Bool
+	status        atomic.Int32
 	bytesIn       atomic.Int64
 	bytesOut      atomic.Int64
 	reconnects    atomic.Int64
@@ -46,6 +47,44 @@ type state struct {
 	connectedAt   atomic.Int64 // unix nano; 0 = not connected
 	activeProfile atomic.Pointer[Profile]
 	profiles      atomic.Pointer[[]Profile]
+}
+
+func (s *state) setStatus(status connectionStatus) {
+	s.status.Store(int32(statusCode(status)))
+}
+
+func (s *state) statusValue() connectionStatus {
+	return statusFromCode(s.status.Load())
+}
+
+func statusCode(status connectionStatus) int32 {
+	switch status {
+	case statusConnecting:
+		return 1
+	case statusReconnecting:
+		return 2
+	case statusConnected:
+		return 3
+	case statusFailed:
+		return 4
+	default:
+		return 0
+	}
+}
+
+func statusFromCode(code int32) connectionStatus {
+	switch code {
+	case 1:
+		return statusConnecting
+	case 2:
+		return statusReconnecting
+	case 3:
+		return statusConnected
+	case 4:
+		return statusFailed
+	default:
+		return statusDisconnected
+	}
 }
 
 // ── status server (opt-in, --status) ─────────────────────────────────────────
@@ -68,6 +107,7 @@ func startStatusServer(ctx context.Context, addr string, s *state) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"connected":  s.connected.Load(),
+			"status":     s.statusValue(),
 			"uptime_s":   int64(time.Since(s.startAt).Seconds()),
 			"bytes_in":   s.bytesIn.Load(),
 			"bytes_out":  s.bytesOut.Load(),
@@ -144,10 +184,24 @@ func runWithReconnect(
 	profile Profile,
 	maxAttempts int,
 	dnsServers []string,
+	settingStates ...*connectionSettingsState,
 ) {
+	settings := newConnectionSettingsState(defaultConnectionSettings())
+	if len(settingStates) > 0 && settingStates[0] != nil {
+		settings = settingStates[0]
+	}
 	attempt := 0
 	var vpn *Client
 	for {
+		if !settings.snapshot().AutoReconnect && attempt > 0 {
+			s.setStatus(statusFailed)
+			return
+		}
+		if attempt == 0 {
+			s.setStatus(statusConnecting)
+		} else {
+			s.setStatus(statusReconnecting)
+		}
 		if vpn == nil {
 			var err error
 			vpn, err = NewClientWithOpts(Config{
@@ -163,6 +217,7 @@ func runWithReconnect(
 
 		if err := vpn.Connect(profile.Link); err != nil {
 			logger.Error("connect failed", "attempt", attempt+1, "err", err)
+			s.setStatus(statusFailed)
 		} else {
 			if err := vpn.checkConnectivity(ctx); err != nil {
 				logger.Warn("proxy is not usable", "err", err)
@@ -170,9 +225,11 @@ func runWithReconnect(
 				_ = vpn.Disconnect(dctx)
 				cancel()
 				vpn = nil
+				s.setStatus(statusFailed)
 				goto backoff
 			}
 			s.connected.Store(true)
+			s.setStatus(statusConnected)
 			s.connectedAt.Store(time.Now().UnixNano())
 			s.activeProfile.Store(&profile)
 			s.bytesIn.Store(0)
@@ -202,6 +259,7 @@ func runWithReconnect(
 			}
 
 			s.connected.Store(false)
+			s.setStatus(statusDisconnected)
 			s.connectedAt.Store(0)
 			s.activeProfile.Store(nil)
 			stopMetrics()
@@ -220,6 +278,12 @@ func runWithReconnect(
 		attempt++
 		if maxAttempts > 0 && attempt >= maxAttempts {
 			logger.Error("max reconnect attempts reached", "attempts", attempt)
+			s.setStatus(statusFailed)
+			return
+		}
+		changeSignal := settings.changeSignal()
+		if !settings.snapshot().AutoReconnect {
+			s.setStatus(statusFailed)
 			return
 		}
 		if available := s.profiles.Load(); available != nil && len(*available) > 1 && attempt%2 == 0 {
@@ -234,6 +298,7 @@ func runWithReconnect(
 		}
 
 		delay := backoffDuration(attempt, defaultReconnectInitial, defaultReconnectMax)
+		s.setStatus(statusReconnecting)
 		logger.Info("reconnecting", "in", delay, "attempt", attempt)
 		s.reconnects.Add(1)
 
@@ -243,6 +308,12 @@ func runWithReconnect(
 			timer.Stop()
 			return
 		case <-timer.C:
+		case <-changeSignal:
+			timer.Stop()
+			if !settings.snapshot().AutoReconnect {
+				s.setStatus(statusFailed)
+				return
+			}
 		}
 	}
 }

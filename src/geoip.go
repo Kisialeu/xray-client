@@ -11,12 +11,16 @@ import (
 )
 
 var (
-	countryCache = make(map[string]string)
-	cacheMu      sync.RWMutex
+	countryCache    = make(map[string]string)
+	countryCacheMu  sync.RWMutex
+	geoIPBatchURL   = "http://ip-api.com/batch?fields=status,countryCode,query"
+	geoIPLookupHost = net.LookupHost
 )
 
 type apiResponseStruct struct {
+	Status      string `json:"status"`
 	CountryCode string `json:"countryCode"`
+	Query       string `json:"query"`
 }
 
 // resolveCountries processes a slice of hostport strings and returns a map from each
@@ -29,34 +33,31 @@ func resolveCountries(hostports []string) map[string]string {
 	unresolved := make(map[string][]string)
 
 	// ---------- First pass: fill result from cache ----------
-	cacheMu.RLock()
+	countryCacheMu.RLock()
 	for _, hp := range hostports {
 		if cached, ok := countryCache[hp]; ok {
 			result[hp] = cached
-			cacheMu.RUnlock()
 			continue
 		}
 		// Extract hostname from hostport.
 		host, _, err := net.SplitHostPort(hp)
 		if err != nil || host == "" {
 			result[hp] = ""
-			cacheMu.RUnlock()
 			continue
 		}
 		if cached, ok := countryCache[host]; ok {
 			result[hp] = cached
-			cacheMu.RUnlock()
 			continue
 		}
 		// Remember hostname for later resolution.
 		unresolved[host] = append(unresolved[host], hp)
 	}
-	cacheMu.RUnlock()
+	countryCacheMu.RUnlock()
 
 	// ---------- Resolve uncached hostnames ----------
 	for hostname, hps := range unresolved {
 		// Resolve hostname to IP addresses.
-		ips, err := net.LookupHost(hostname)
+		ips, err := geoIPLookupHost(hostname)
 		if err != nil || len(ips) == 0 {
 			for _, hp := range hps {
 				result[hp] = ""
@@ -67,26 +68,58 @@ func resolveCountries(hostports []string) map[string]string {
 			ips = ips[:100] // enforce 100‑IP batch limit
 		}
 		// Prepare batch request.
-		jsonData, _ := json.Marshal(ips)
+		jsonData, err := json.Marshal(ips)
+		if err != nil {
+			continue
+		}
 		resp, err := httpClient.Post(
-			"http://ip-api.com/batch?fields=countryCode",
+			geoIPBatchURL,
 			"application/json",
 			bytes.NewReader(jsonData),
 		)
-		if err == nil && resp.StatusCode == 200 {
-			defer resp.Body.Close()
-			var batchResp []apiResponseStruct
-			if err := json.NewDecoder(resp.Body).Decode(&batchResp); err == nil && len(batchResp) > 0 {
-				country := batchResp[0].CountryCode
-				for _, hp := range hps {
-					result[hp] = country
-				}
-				// Cache the result under the hostname.
-				cacheMu.Lock()
-				countryCache[hostname] = country
-				cacheMu.Unlock()
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			continue
+		}
+
+		var batchResp []apiResponseStruct
+		decodeErr := json.NewDecoder(resp.Body).Decode(&batchResp)
+		closeErr := resp.Body.Close()
+		if decodeErr != nil || closeErr != nil {
+			continue
+		}
+
+		countryByIP := make(map[string]string, len(batchResp))
+		for i, item := range batchResp {
+			if item.Status != "success" || item.CountryCode == "" {
+				continue
+			}
+			ip := item.Query
+			if ip == "" && i < len(ips) {
+				ip = ips[i]
+			}
+			countryByIP[ip] = strings.ToUpper(item.CountryCode)
+		}
+
+		country := ""
+		for _, ip := range ips {
+			if cc := countryByIP[ip]; cc != "" {
+				country = cc
+				break
 			}
 		}
+		if country == "" {
+			continue
+		}
+		for _, hp := range hps {
+			result[hp] = country
+		}
+		countryCacheMu.Lock()
+		countryCache[hostname] = country
+		countryCacheMu.Unlock()
 	}
 
 	return result
@@ -108,11 +141,11 @@ func profileFlag(p Profile) string {
 func profileCountryCode(p Profile) string {
 	name := strings.ToUpper(strings.TrimSpace(p.Name))
 	switch name {
-	case "БАВАРИЯ", "DE":
+	case "БАВАРИЯ", "GERMANY FRANKFURT", "DE":
 		return "DE"
-	case "ШВЕЙЦАРИЯ", "CH":
+	case "ШВЕЙЦАРИЯ", "SWISS ZURICH", "CH":
 		return "CH"
-	case "АСТАНА", "KZ":
+	case "АСТАНА", "ASTANA", "KZ":
 		return "KZ"
 	default:
 		return ""
@@ -123,6 +156,7 @@ func profileCountryCode(p Profile) string {
 // It validates the input before converting each character to a Unicode regional
 // indicator symbol.
 func countryFlag(code string) string {
+	code = strings.ToUpper(code)
 	if len(code) != 2 {
 		return ""
 	}

@@ -103,6 +103,23 @@ sudo ./xray-cli --config servers.yaml --tray
 
 The tray shows connection status with country flag icon, session duration, live bandwidth, server ping latency, and profile switching.
 
+The flat `Connection Settings` section provides:
+
+- `Auto-connect` - checked by default; controls whether the selected profile
+  starts when the tray session starts. Enabling it while disconnected starts
+  the selected profile.
+- `Auto-reconnect` - checked by default; controls retries after the current
+  tunnel ends. Disabling it cancels pending retry waits after the current
+  operation finishes.
+- `Reconnect now` - stops the current session and starts the selected profile
+  through the serialized controller.
+- `Connect selected profile` - connects or switches to the selected profile.
+- `Disconnect and stop` - cancels the reconnect loop and tears down the
+  active tunnel.
+
+These settings are session-only and are not written to disk. Their defaults
+preserve the existing automatic connection and reconnect behavior.
+
 ![macOS tray menu](assets/tray-screenshot.png)
 
 ### Daemon + tray client (autostart with tray icon)
@@ -131,6 +148,9 @@ xray-cli --tray --daemon-addr 127.0.0.1:19099
 - `POST /connect` — `{"profile": "name"}` to switch
 - `POST /disconnect` — stop VPN
 - `POST /refresh` — re-fetch subscription profiles
+- `GET /settings` — current connection settings and lifecycle status
+- `POST /settings` — update one or both settings, for example `{"auto_reconnect": false}`
+- `POST /reconnect` — stop and restart the currently selected profile
 
 **Install as launchd services:**
 

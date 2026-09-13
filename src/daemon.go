@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -30,6 +31,7 @@ func runDaemon(
 	}
 	var mu sync.RWMutex
 	profiles := allProfiles
+	settings := newConnectionSettingsState(defaultConnectionSettings())
 
 	getProfiles := func() []Profile {
 		mu.RLock()
@@ -43,6 +45,7 @@ func runDaemon(
 		var (
 			vpnCancel context.CancelFunc
 			done      <-chan struct{}
+			selected  = initial
 		)
 
 		start := func(p Profile) {
@@ -53,7 +56,7 @@ func runDaemon(
 			done = d
 			go func() {
 				defer close(d)
-				runWithReconnect(vpnCtx, logger, s, p, maxReconnects, dnsServers)
+				runWithReconnect(vpnCtx, logger, s, p, maxReconnects, dnsServers, settings)
 			}()
 		}
 
@@ -75,7 +78,11 @@ func runDaemon(
 			}
 		}
 
-		start(initial)
+		if settings.snapshot().AutoConnect {
+			start(initial)
+		} else {
+			s.setStatus(statusDisconnected)
+		}
 
 		for {
 			select {
@@ -86,11 +93,38 @@ func runDaemon(
 				var err error
 				switch cmd.kind {
 				case cmdSwitch:
+					selected = cmd.profile
 					if err = stop(); err == nil {
 						start(cmd.profile)
 					}
 				case cmdStop:
 					err = stop()
+					if err == nil {
+						s.setStatus(statusDisconnected)
+					}
+				case cmdReconnect:
+					if err = stop(); err == nil {
+						start(selected)
+					}
+				case cmdSettings:
+					previous := settings.snapshot()
+					updated, updateErr := settings.update(cmd.settings)
+					err = updateErr
+					if err == nil && !previous.AutoConnect && updated.AutoConnect {
+						finished := vpnCancel == nil
+						if !finished && done != nil {
+							select {
+							case <-done:
+								finished = true
+							default:
+							}
+						}
+						if finished {
+							if err = stop(); err == nil {
+								start(selected)
+							}
+						}
+					}
 				}
 				if cmd.done != nil {
 					cmd.done <- err
@@ -120,12 +154,60 @@ func runDaemon(
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"connected":      s.connected.Load(),
+			"status":         s.statusValue(),
 			"active_profile": activeProfile,
 			"uptime_s":       int64(time.Since(s.startAt).Seconds()),
 			"bytes_in":       s.bytesIn.Load(),
 			"bytes_out":      s.bytesOut.Load(),
 			"reconnects":     s.reconnects.Load(),
 		})
+	})
+
+	mux.HandleFunc("/settings", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, map[string]any{
+				"auto_connect":   settings.snapshot().AutoConnect,
+				"auto_reconnect": settings.snapshot().AutoReconnect,
+				"active_profile": activeProfileName(s),
+				"status":         s.statusValue(),
+			})
+		case http.MethodPost:
+			var patch connectionSettingsPatch
+			decoder := json.NewDecoder(r.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&patch); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid settings body"})
+				return
+			}
+			var trailing any
+			if err := decoder.Decode(&trailing); err != io.EOF {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid settings body"})
+				return
+			}
+			done := make(chan error, 1)
+			select {
+			case cmdCh <- vpnCmd{kind: cmdSettings, settings: patch, done: done}:
+			case <-r.Context().Done():
+				return
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+					return
+				}
+			case <-r.Context().Done():
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":             true,
+				"auto_connect":   settings.snapshot().AutoConnect,
+				"auto_reconnect": settings.snapshot().AutoReconnect,
+			})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
 
 	mux.HandleFunc("/profiles", func(w http.ResponseWriter, _ *http.Request) {
@@ -172,8 +254,13 @@ func runDaemon(
 		case <-r.Context().Done():
 			return
 		}
-		if err := <-done; err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		select {
+		case err := <-done:
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+				return
+			}
+		case <-r.Context().Done():
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -190,8 +277,36 @@ func runDaemon(
 		case <-r.Context().Done():
 			return
 		}
-		if err := <-done; err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		select {
+		case err := <-done:
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("/reconnect", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		done := make(chan error, 1)
+		select {
+		case cmdCh <- vpnCmd{kind: cmdReconnect, done: done}:
+		case <-r.Context().Done():
+			return
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+				return
+			}
+		case <-r.Context().Done():
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -271,6 +386,13 @@ func findProfile(profiles []Profile, name string) (Profile, bool) {
 		}
 	}
 	return Profile{}, false
+}
+
+func activeProfileName(s *state) string {
+	if profile := s.activeProfile.Load(); profile != nil {
+		return profile.Name
+	}
+	return ""
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

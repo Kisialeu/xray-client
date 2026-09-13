@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/systray"
@@ -25,12 +28,20 @@ func newDaemonClient(addr string) *daemonClient {
 }
 
 type daemonStatus struct {
-	Connected     bool   `json:"connected"`
-	ActiveProfile string `json:"active_profile"`
-	UptimeS       int64  `json:"uptime_s"`
-	BytesIn       int64  `json:"bytes_in"`
-	BytesOut      int64  `json:"bytes_out"`
-	Reconnects    int64  `json:"reconnects"`
+	Connected     bool             `json:"connected"`
+	Status        connectionStatus `json:"status"`
+	ActiveProfile string           `json:"active_profile"`
+	UptimeS       int64            `json:"uptime_s"`
+	BytesIn       int64            `json:"bytes_in"`
+	BytesOut      int64            `json:"bytes_out"`
+	Reconnects    int64            `json:"reconnects"`
+}
+
+type daemonSettings struct {
+	AutoConnect   bool             `json:"auto_connect"`
+	AutoReconnect bool             `json:"auto_reconnect"`
+	ActiveProfile string           `json:"active_profile"`
+	Status        connectionStatus `json:"status"`
 }
 
 type daemonProfiles struct {
@@ -41,8 +52,81 @@ type daemonProfiles struct {
 	Active string `json:"active"`
 }
 
-func (dc *daemonClient) status() (daemonStatus, error) {
-	resp, err := dc.client.Get(dc.base + "/status")
+// daemonSettingsUpdater serializes tray setting toggles so each toggle reads
+// the result of the previous daemon update.
+type daemonSettingsUpdater struct {
+	mu      sync.Mutex
+	current *atomic.Value
+	version uint64
+	update  func(connectionSettingsPatch) (ConnectionSettings, error)
+}
+
+func (u *daemonSettingsUpdater) toggleAutoConnect() error {
+	return u.toggle(func(settings ConnectionSettings) bool { return !settings.AutoConnect }, func(patch *connectionSettingsPatch, value bool) {
+		patch.AutoConnect = &value
+	})
+}
+
+func (u *daemonSettingsUpdater) toggleAutoReconnect() error {
+	return u.toggle(func(settings ConnectionSettings) bool { return !settings.AutoReconnect }, func(patch *connectionSettingsPatch, value bool) {
+		patch.AutoReconnect = &value
+	})
+}
+
+func (u *daemonSettingsUpdater) toggle(value func(ConnectionSettings) bool, set func(*connectionSettingsPatch, bool)) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	current := u.current.Load().(ConnectionSettings)
+	next := value(current)
+	var patch connectionSettingsPatch
+	set(&patch, next)
+	updated, err := u.update(patch)
+	if err != nil {
+		return err
+	}
+	u.current.Store(updated)
+	u.version++
+	return nil
+}
+
+func (u *daemonSettingsUpdater) set(settings ConnectionSettings) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.current.Store(settings)
+	u.version++
+}
+
+func (u *daemonSettingsUpdater) versionAtStart() uint64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.version
+}
+
+func (u *daemonSettingsUpdater) setIfVersion(version uint64, settings ConnectionSettings) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.version != version {
+		return false
+	}
+	u.current.Store(settings)
+	u.version++
+	return true
+}
+
+func (dc *daemonClient) request(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, dc.base+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return dc.client.Do(req)
+}
+
+func (dc *daemonClient) status(ctx context.Context) (daemonStatus, error) {
+	resp, err := dc.request(ctx, http.MethodGet, "/status", nil)
 	if err != nil {
 		return daemonStatus{}, err
 	}
@@ -54,8 +138,8 @@ func (dc *daemonClient) status() (daemonStatus, error) {
 	return s, nil
 }
 
-func (dc *daemonClient) profiles() (daemonProfiles, error) {
-	resp, err := dc.client.Get(dc.base + "/profiles")
+func (dc *daemonClient) profiles(ctx context.Context) (daemonProfiles, error) {
+	resp, err := dc.request(ctx, http.MethodGet, "/profiles", nil)
 	if err != nil {
 		return daemonProfiles{}, err
 	}
@@ -67,9 +151,12 @@ func (dc *daemonClient) profiles() (daemonProfiles, error) {
 	return p, nil
 }
 
-func (dc *daemonClient) connect(name string) error {
-	body, _ := json.Marshal(map[string]string{"profile": name})
-	resp, err := dc.client.Post(dc.base+"/connect", "application/json", bytes.NewReader(body))
+func (dc *daemonClient) connect(ctx context.Context, name string) error {
+	body, err := json.Marshal(map[string]string{"profile": name})
+	if err != nil {
+		return err
+	}
+	resp, err := dc.request(ctx, http.MethodPost, "/connect", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -87,8 +174,8 @@ func (dc *daemonClient) connect(name string) error {
 	return nil
 }
 
-func (dc *daemonClient) refresh() error {
-	resp, err := dc.client.Post(dc.base+"/refresh", "application/json", nil)
+func (dc *daemonClient) refresh(ctx context.Context) error {
+	resp, err := dc.request(ctx, http.MethodPost, "/refresh", nil)
 	if err != nil {
 		return err
 	}
@@ -106,8 +193,8 @@ func (dc *daemonClient) refresh() error {
 	return nil
 }
 
-func (dc *daemonClient) ping() ([]PingResult, error) {
-	resp, err := dc.client.Get(dc.base + "/ping")
+func (dc *daemonClient) ping(ctx context.Context) ([]PingResult, error) {
+	resp, err := dc.request(ctx, http.MethodGet, "/ping", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -121,8 +208,8 @@ func (dc *daemonClient) ping() ([]PingResult, error) {
 	return result.Results, nil
 }
 
-func (dc *daemonClient) serverInfo() (*ServerInfo, error) {
-	resp, err := dc.client.Get(dc.base + "/server-info")
+func (dc *daemonClient) serverInfo(ctx context.Context) (*ServerInfo, error) {
+	resp, err := dc.request(ctx, http.MethodGet, "/server-info", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -137,8 +224,68 @@ func (dc *daemonClient) serverInfo() (*ServerInfo, error) {
 	return &info, nil
 }
 
-func (dc *daemonClient) disconnect() error {
-	resp, err := dc.client.Post(dc.base+"/disconnect", "application/json", nil)
+func (dc *daemonClient) disconnect(ctx context.Context) error {
+	resp, err := dc.request(ctx, http.MethodPost, "/disconnect", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("%s", result.Error)
+	}
+	return nil
+}
+
+func (dc *daemonClient) settings(ctx context.Context) (daemonSettings, error) {
+	resp, err := dc.request(ctx, http.MethodGet, "/settings", nil)
+	if err != nil {
+		return daemonSettings{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemonSettings{}, fmt.Errorf("settings: status %d", resp.StatusCode)
+	}
+	var settings daemonSettings
+	if err := json.NewDecoder(resp.Body).Decode(&settings); err != nil {
+		return daemonSettings{}, err
+	}
+	return settings, nil
+}
+
+func (dc *daemonClient) updateSettings(ctx context.Context, patch connectionSettingsPatch) (daemonSettings, error) {
+	body, err := json.Marshal(patch)
+	if err != nil {
+		return daemonSettings{}, err
+	}
+	resp, err := dc.request(ctx, http.MethodPost, "/settings", bytes.NewReader(body))
+	if err != nil {
+		return daemonSettings{}, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		OK            bool   `json:"ok"`
+		Error         string `json:"error"`
+		AutoConnect   bool   `json:"auto_connect"`
+		AutoReconnect bool   `json:"auto_reconnect"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return daemonSettings{}, err
+	}
+	if !result.OK {
+		return daemonSettings{}, fmt.Errorf("%s", result.Error)
+	}
+	return daemonSettings{AutoConnect: result.AutoConnect, AutoReconnect: result.AutoReconnect}, nil
+}
+
+func (dc *daemonClient) reconnect(ctx context.Context) error {
+	resp, err := dc.request(ctx, http.MethodPost, "/reconnect", nil)
 	if err != nil {
 		return err
 	}
@@ -192,6 +339,20 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 			item *systray.MenuItem
 		}
 		var profileItems []profileItem
+		var selectedProfile atomic.Value
+		selectedProfile.Store("")
+		var currentSettings atomic.Value
+		currentSettings.Store(defaultConnectionSettings())
+		settingsUpdater := &daemonSettingsUpdater{
+			current: &currentSettings,
+			update: func(patch connectionSettingsPatch) (ConnectionSettings, error) {
+				updated, err := dc.updateSettings(ctx, patch)
+				if err != nil {
+					return ConnectionSettings{}, err
+				}
+				return ConnectionSettings{AutoConnect: updated.AutoConnect, AutoReconnect: updated.AutoReconnect}, nil
+			},
+		}
 
 		formatProfileTitle := func(prefix, name string, latencyMs int, flag string) string {
 			if flag != "" {
@@ -233,7 +394,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 					return
 				default:
 				}
-				profs, err := dc.profiles()
+				profs, err := dc.profiles(ctx)
 				if err != nil {
 					logger.Debug("waiting for daemon", "err", err)
 					time.Sleep(2 * time.Second)
@@ -250,17 +411,26 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 
 					go func() {
 						for range item.ClickedCh {
+							selectedProfile.Store(name)
 							logger.Info("switching profile", "profile", name)
-							if err := dc.connect(name); err != nil {
+							if err := dc.connect(ctx, name); err != nil {
 								logger.Error("connect failed", "profile", name, "err", err)
 							}
 						}
 					}()
 				}
+				if profs.Active != "" {
+					selectedProfile.Store(profs.Active)
+				} else if len(profs.Profiles) > 0 {
+					selectedProfile.Store(profs.Profiles[0].Name)
+				}
+				if settings, err := dc.settings(ctx); err == nil {
+					settingsUpdater.set(ConnectionSettings{AutoConnect: settings.AutoConnect, AutoReconnect: settings.AutoReconnect})
+				}
 
 				// Ping servers in background to show latency
 				go func() {
-					if results, err := dc.ping(); err == nil {
+					if results, err := dc.ping(ctx); err == nil {
 						updatePingResults(results)
 					}
 				}()
@@ -268,10 +438,25 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				systray.AddSeparator()
 
 				// Add action buttons after profiles are loaded
-				mConnect := systray.AddMenuItem("Connect", "")
-				mDisconnect := systray.AddMenuItem("Disconnect", "")
+				mConnect := systray.AddMenuItem("Connect selected profile", "")
+				mReconnect := systray.AddMenuItem("Reconnect now", "")
+				mDisconnect := systray.AddMenuItem("Disconnect and stop", "")
 				mDisconnect.Hide()
 				mRefresh := systray.AddMenuItem("Refresh profiles", "")
+				systray.AddSeparator()
+				mSettingsLabel := systray.AddMenuItem("Connection Settings", "")
+				mSettingsLabel.Disable()
+				mAutoConnect := systray.AddMenuItem("", "")
+				mAutoReconnect := systray.AddMenuItem("", "")
+				setSettingTitle := func(item *systray.MenuItem, name string, enabled bool) {
+					prefix := "    "
+					if enabled {
+						prefix = "  ✓ "
+					}
+					item.SetTitle(prefix + name)
+				}
+				setSettingTitle(mAutoConnect, "Auto-connect", currentSettings.Load().(ConnectionSettings).AutoConnect)
+				setSettingTitle(mAutoReconnect, "Auto-reconnect", currentSettings.Load().(ConnectionSettings).AutoReconnect)
 				systray.AddSeparator()
 
 				mServerInfoLabel := systray.AddMenuItem("Server Info", "")
@@ -288,7 +473,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				mInfoLeak.Disable()
 
 				updateServerInfo := func() {
-					info, err := dc.serverInfo()
+					info, err := dc.serverInfo(ctx)
 					if err != nil {
 						logger.Debug("server info fetch failed", "err", err)
 						return
@@ -324,34 +509,44 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 						case <-ctx.Done():
 							return
 						case <-mConnect.ClickedCh:
-							if len(profileItems) > 0 {
-								// Reconnect the active or first profile
-								active := ""
-								if st, err := dc.status(); err == nil && st.ActiveProfile != "" {
-									active = st.ActiveProfile
-								}
-								if active == "" {
-									active = profileItems[0].name
-								}
+							if active, ok := selectedProfile.Load().(string); ok && active != "" {
 								go func() {
-									if err := dc.connect(active); err != nil {
+									if err := dc.connect(ctx, active); err != nil {
 										logger.Error("connect failed", "err", err)
 									}
 								}()
 							}
+						case <-mReconnect.ClickedCh:
+							go func() {
+								if err := dc.reconnect(ctx); err != nil {
+									logger.Error("reconnect failed", "err", err)
+								}
+							}()
+						case <-mAutoConnect.ClickedCh:
+							go func() {
+								if err := settingsUpdater.toggleAutoConnect(); err != nil {
+									logger.Error("update auto-connect failed", "err", err)
+								}
+							}()
+						case <-mAutoReconnect.ClickedCh:
+							go func() {
+								if err := settingsUpdater.toggleAutoReconnect(); err != nil {
+									logger.Error("update auto-reconnect failed", "err", err)
+								}
+							}()
 						case <-mDisconnect.ClickedCh:
 							go func() {
-								if err := dc.disconnect(); err != nil {
+								if err := dc.disconnect(ctx); err != nil {
 									logger.Error("disconnect failed", "err", err)
 								}
 							}()
 						case <-mRefresh.ClickedCh:
 							go func() {
-								if err := dc.refresh(); err != nil {
+								if err := dc.refresh(ctx); err != nil {
 									logger.Error("refresh failed", "err", err)
 									return
 								}
-								profs, err := dc.profiles()
+								profs, err := dc.profiles(ctx)
 								if err != nil {
 									logger.Error("fetch profiles after refresh", "err", err)
 									return
@@ -377,15 +572,16 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									name := p.Name
 									go func() {
 										for range item.ClickedCh {
+											selectedProfile.Store(name)
 											logger.Info("switching profile", "profile", name)
-											if err := dc.connect(name); err != nil {
+											if err := dc.connect(ctx, name); err != nil {
 												logger.Error("connect failed", "profile", name, "err", err)
 											}
 										}
 									}()
 								}
 								logger.Info("profiles refreshed", "count", len(profs.Profiles))
-								if results, err := dc.ping(); err == nil {
+								if results, err := dc.ping(ctx); err == nil {
 									updatePingResults(results)
 								}
 							}()
@@ -433,7 +629,8 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 						case <-ctx.Done():
 							return
 						case <-t.C:
-							st, err := dc.status()
+							settingsVersion := settingsUpdater.versionAtStart()
+							st, err := dc.status(ctx)
 							if err != nil {
 								if daemonOnline {
 									systray.SetTemplateIcon(iconDisc(), iconDisc())
@@ -450,12 +647,26 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 								continue
 							}
 							daemonOnline = true
+							if settings, settingsErr := dc.settings(ctx); settingsErr == nil {
+								value := ConnectionSettings{AutoConnect: settings.AutoConnect, AutoReconnect: settings.AutoReconnect}
+								if settingsUpdater.setIfVersion(settingsVersion, value) {
+									setSettingTitle(mAutoConnect, "Auto-connect", value.AutoConnect)
+									setSettingTitle(mAutoReconnect, "Auto-reconnect", value.AutoReconnect)
+								}
+							}
 
 							rxRate := float64(st.BytesIn-prevIn) / metricsInterval.Seconds()
 							txRate := float64(st.BytesOut-prevOut) / metricsInterval.Seconds()
 							prevIn, prevOut = st.BytesIn, st.BytesOut
 
-							if st.Connected {
+							statusValue := st.Status
+							if statusValue == "" {
+								statusValue = statusDisconnected
+								if st.Connected {
+									statusValue = statusConnected
+								}
+							}
+							if statusValue == statusConnected {
 								pName := st.ActiveProfile
 								if f := flags[pName]; f != "" {
 									if icon := renderEmojiIcon(f, 22); icon != nil {
@@ -518,10 +729,24 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 								}
 							} else {
 								systray.SetTemplateIcon(iconDisc(), iconDisc())
+								if statusValue == statusConnecting || statusValue == statusReconnecting {
+									mDisconnect.Show()
+								} else {
+									mDisconnect.Hide()
+								}
 
-								if "⚫  Disconnected" != prevStatus {
-									mStatusLine.SetTitle("⚫  Disconnected")
-									prevStatus = "⚫  Disconnected"
+								statusTitle := "⚫  Disconnected"
+								switch statusValue {
+								case statusConnecting:
+									statusTitle = "🟡  Connecting"
+								case statusReconnecting:
+									statusTitle = "🟠  Reconnecting"
+								case statusFailed:
+									statusTitle = "🔴  Operation failed"
+								}
+								if statusTitle != prevStatus {
+									mStatusLine.SetTitle(statusTitle)
+									prevStatus = statusTitle
 								}
 
 								if prevConnected {
@@ -530,6 +755,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									mTotals.Hide()
 									mDisconnect.Hide()
 									mConnect.Show()
+									mReconnect.Show()
 									mInfoIP.SetTitle("    IP: —")
 									mInfoCountry.SetTitle("    Location: —")
 									mInfoProto.SetTitle("    Protocol: —")
