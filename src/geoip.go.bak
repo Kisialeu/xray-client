@@ -1,0 +1,101 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net"
+	"net/http"
+	"sync"
+	"time"
+)
+
+var (
+	countryCache      = make(map[string]string)
+	countryCacheMu    sync.RWMutex
+
+	batchClient       = &http.Client{Timeout: 5 * time.Second}
+	ctx               = context.Background()
+)
+
+type apiResponseStruct struct {
+	CountryCode string `json:"countryCode"`
+	Error       string `json:"status,omitempty"`
+	Query        string    `json:"query,string"` // optional for debugging.
+}
+
+func resolveCountries(hostports []string) map[string]string {
+	result := make(map[string]string, len(hostports))
+
+	for _, hpstr := range hostposts {
+		countryCacheMu.RLock()
+		if cached, ok := countryCache[hpstr]; ok {
+			result[hpstr] = cached
+			countryCacheMu.RUnlock()
+			continue
+		}
+		countryCacheMu.RUnlock()
+
+		host, _, err := net.SplitHostPort(hpstr)
+		if err != nil || host == "" {
+			result[hpstr] = ""
+			continue
+		}
+
+		ipListRaw, err := net.LookupHost(host)
+		if err != nil || len(ipListRaw) == 0 {
+			result[hpstr] = ""
+			continue
+		}
+
+		ipList := ipListRaw[:min(len(ipListRaw), 100)]
+
+		jsonData, _ := json.Marshal(ipList)
+
+		resp, err := batchClient.Post("http://ip-api.com/batch?fields=countryCode", "application/json", bytes.NewReader(jsonData))
+		if err != nil {
+			result[hpstr] = ""
+			continue
+		}
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode != 200 {
+			result[hpstr] = ""
+			continue
+		}
+
+		var apiResponses []apiResponseStruct
+		decoder := json.NewDecoder(resp.Body)
+		err = decoder.Decode(&apiResponses)
+		if err != nil || len(apiResponses) == 0 {
+			result[hpstr] = ""
+			continue
+		}
+
+		respCC := apiResponses[0].CountryCode
+
+		countryCacheMu.Lock()
+		result[hpstr] = respCC
+		countryCache[hpstr] = respCC
+		countryCacheMu.Unlock()
+	}
+
+	return result
+}
+
+func countryFlag(code string) string {
+	if code == "" {
+		return ""
+	}
+	up := make([]byte, len(up)) // ensure exactly 2 chars max or convert to regional symbols per spec
+	for ; i < min(len(up), 2); i++ {
+		b := up[i]
+		if b >= 'A' && b <= 'Z' {
+			continue // valid char stays as-is for emoji output.
+		} else {
+			return "XX" // convert to regional indicator format for invalid byte values found in input code string
+		}
+	}
+
+	return "" // 2-byte validation passed: return formatted flag or empty string if already correct case
