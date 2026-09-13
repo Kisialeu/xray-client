@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	countryCache = make(map[string]string)
-	cacheMu      sync.RWMutex
+	countryCache   = make(map[string]string)
+	countryCacheMu sync.RWMutex
 )
 
 type apiResponseStruct struct {
@@ -29,29 +29,26 @@ func resolveCountries(hostports []string) map[string]string {
 	unresolved := make(map[string][]string)
 
 	// ---------- First pass: fill result from cache ----------
-	cacheMu.RLock()
+	countryCacheMu.RLock()
 	for _, hp := range hostports {
 		if cached, ok := countryCache[hp]; ok {
 			result[hp] = cached
-			cacheMu.RUnlock()
 			continue
 		}
 		// Extract hostname from hostport.
 		host, _, err := net.SplitHostPort(hp)
 		if err != nil || host == "" {
 			result[hp] = ""
-			cacheMu.RUnlock()
 			continue
 		}
 		if cached, ok := countryCache[host]; ok {
 			result[hp] = cached
-			cacheMu.RUnlock()
 			continue
 		}
 		// Remember hostname for later resolution.
 		unresolved[host] = append(unresolved[host], hp)
 	}
-	cacheMu.RUnlock()
+	countryCacheMu.RUnlock()
 
 	// ---------- Resolve uncached hostnames ----------
 	for hostname, hps := range unresolved {
@@ -82,9 +79,9 @@ func resolveCountries(hostports []string) map[string]string {
 					result[hp] = country
 				}
 				// Cache the result under the hostname.
-				cacheMu.Lock()
+				countryCacheMu.Lock()
 				countryCache[hostname] = country
-				cacheMu.Unlock()
+				countryCacheMu.Unlock()
 			}
 		}
 	}
@@ -108,11 +105,11 @@ func profileFlag(p Profile) string {
 func profileCountryCode(p Profile) string {
 	name := strings.ToUpper(strings.TrimSpace(p.Name))
 	switch name {
-	case "БАВАРИЯ", "DE":
+	case "БАВАРИЯ", "GERMANY FRANKFURT", "DE":
 		return "DE"
-	case "ШВЕЙЦАРИЯ", "CH":
+	case "ШВЕЙЦАРИЯ", "SWISS ZURICH", "CH":
 		return "CH"
-	case "АСТАНА", "KZ":
+	case "АСТАНА", "ASTANA", "KZ":
 		return "KZ"
 	default:
 		return ""
@@ -123,6 +120,7 @@ func profileCountryCode(p Profile) string {
 // It validates the input before converting each character to a Unicode regional
 // indicator symbol.
 func countryFlag(code string) string {
+	code = strings.ToUpper(code)
 	if len(code) != 2 {
 		return ""
 	}

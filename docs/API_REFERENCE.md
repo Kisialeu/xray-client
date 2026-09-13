@@ -18,6 +18,32 @@ The HTTP control API is available when running in daemon mode with `--daemon-add
 | POST | `/connect` | `{"profile": "name"}` | Switch to named profile; requires valid profile name |
 | POST | `/disconnect` | - | Terminate current tunnel connection |
 | POST | `/refresh` | - | Re-fetch subscription profiles from remote URL |
+| GET | `/settings` | - | Returns session-only connection settings, active profile, and lifecycle status |
+| POST | `/settings` | `{"auto_connect": false}` | Updates one or both connection settings |
+| POST | `/reconnect` | - | Stops and restarts the selected profile through the daemon controller |
+
+### Connection Settings Response
+
+```json
+{
+    "auto_connect": true,
+    "auto_reconnect": true,
+    "active_profile": "home",
+    "status": "connected"
+}
+```
+
+`POST /settings` accepts a partial JSON object containing `auto_connect`,
+`auto_reconnect`, or both. An empty object and unknown fields are rejected with
+`400 Bad Request`. Settings are session-only and revert to both enabled when
+the daemon process starts. Enabling `auto_connect` while the daemon is idle
+starts the selected profile; changing it while connected does not interrupt the
+current tunnel.
+
+The `status` field is one of `disconnected`, `connecting`, `reconnecting`,
+`connected`, or `operation_failed`. `POST /reconnect` and `POST /connect` are
+serialized with `POST /disconnect`; a new tunnel is not started until the
+previous operation has completed.
 
 ### Status Response Format
 
@@ -25,6 +51,7 @@ The HTTP control API is available when running in daemon mode with `--daemon-add
 {
     "connected": true,
     "active_profile": "home",
+    "status": "connected",
     "uptime_s": 3600,
     "bytes_in": 15728640,
     "bytes_out": 2097152,

@@ -40,7 +40,12 @@ func iconDisc() []byte { return cachedIconDisc }
 //	    falkenstein              ← flat list, ✓ marks active
 //	    helsinki
 //	─────────────────────────────
-//	Connect / Disconnect
+//	Connect selected profile
+//	Reconnect now
+//	Disconnect and stop
+//	Connection Settings
+//	✓ Auto-connect
+//	✓ Auto-reconnect
 //	─────────────────────────────
 //	Quit
 
@@ -90,9 +95,14 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 		systray.AddSeparator()
 
 		// ── actions ───────────────────────────────────────────────────────
-		mConnect := systray.AddMenuItem("Connect", "")
-		mDisconnect := systray.AddMenuItem("Disconnect", "")
+		mConnect := systray.AddMenuItem("Connect selected profile", "")
+		mReconnect := systray.AddMenuItem("Reconnect now", "")
+		mDisconnect := systray.AddMenuItem("Disconnect and stop", "")
 		mDisconnect.Hide()
+		mSettingsLabel := systray.AddMenuItem("Connection Settings", "")
+		mSettingsLabel.Disable()
+		mAutoConnect := systray.AddMenuItem("", "")
+		mAutoReconnect := systray.AddMenuItem("", "")
 		systray.AddSeparator()
 		mQuit := systray.AddMenuItem("Quit", "")
 
@@ -100,6 +110,16 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 		// atomic.Pointer gives a safe unsynchronized read. (issue 1)
 		var currentProfile atomic.Pointer[Profile]
 		currentProfile.Store(&initial)
+		settings := newConnectionSettingsState(defaultConnectionSettings())
+		setSettingTitle := func(item *systray.MenuItem, name string, enabled bool) {
+			prefix := "    "
+			if enabled {
+				prefix = "  ✓ "
+			}
+			item.SetTitle(prefix + name)
+		}
+		setSettingTitle(mAutoConnect, "Auto-connect", settings.snapshot().AutoConnect)
+		setSettingTitle(mAutoReconnect, "Auto-reconnect", settings.snapshot().AutoReconnect)
 
 		// ── command channel - all lifecycle ops go through here (issues 1,3,5)
 		// Unbuffered: senders block until the controller accepts the command,
@@ -122,7 +142,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 				done = d
 				go func() {
 					defer close(d)
-					runWithReconnect(vpnCtx, logger, s, p, maxReconnects, dnsServers)
+					runWithReconnect(vpnCtx, logger, s, p, maxReconnects, dnsServers, settings)
 				}()
 			}
 
@@ -151,7 +171,11 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 				}
 			}
 
-			start(initial)
+			if settings.snapshot().AutoConnect {
+				start(initial)
+			} else {
+				s.setStatus(statusDisconnected)
+			}
 
 			for {
 				select {
@@ -162,11 +186,45 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 					var err error
 					switch cmd.kind {
 					case cmdSwitch:
+						currentProfile.Store(&cmd.profile)
 						if err = stop(); err == nil {
 							start(cmd.profile)
 						}
 					case cmdStop:
 						err = stop()
+						if err == nil {
+							s.setStatus(statusDisconnected)
+						}
+					case cmdReconnect:
+						if cp := currentProfile.Load(); cp != nil {
+							if err = stop(); err == nil {
+								start(*cp)
+							}
+						}
+					case cmdSettings:
+						previous := settings.snapshot()
+						updated, updateErr := settings.update(cmd.settings)
+						err = updateErr
+						if err == nil && !previous.AutoConnect && updated.AutoConnect {
+							finished := vpnCancel == nil
+							if !finished && done != nil {
+								select {
+								case <-done:
+									finished = true
+								default:
+								}
+							}
+							if finished {
+								if err = stop(); err == nil {
+									if profile := currentProfile.Load(); profile != nil {
+										start(*profile)
+									}
+								}
+							}
+						}
+					}
+					if err != nil {
+						s.setStatus(statusFailed)
 					}
 					if cmd.done != nil {
 						cmd.done <- err
@@ -183,14 +241,17 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 			defer t.Stop()
 
 			var (
-				prevConnected  bool
-				prevStatus     string
-				prevSession    string
-				prevBandwidth  string
-				prevTotals     string
-				prevActiveName string
-				prevIn         int64
-				prevOut        int64
+				prevConnected     bool
+				prevStatus        string
+				prevSession       string
+				prevBandwidth     string
+				prevTotals        string
+				prevActiveName    string
+				prevIn            int64
+				prevOut           int64
+				prevAutoConnect   bool
+				prevAutoReconnect bool
+				settingsRendered  bool
 			)
 
 			for {
@@ -204,7 +265,18 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 					txRate := float64(out-prevOut) / metricsInterval.Seconds()
 					prevIn, prevOut = in, out
 
-					connected := s.connected.Load()
+					statusValue := s.statusValue()
+					connected := statusValue == statusConnected
+					currentSettings := settings.snapshot()
+					if !settingsRendered || currentSettings.AutoConnect != prevAutoConnect {
+						setSettingTitle(mAutoConnect, "Auto-connect", currentSettings.AutoConnect)
+						prevAutoConnect = currentSettings.AutoConnect
+					}
+					if !settingsRendered || currentSettings.AutoReconnect != prevAutoReconnect {
+						setSettingTitle(mAutoReconnect, "Auto-reconnect", currentSettings.AutoReconnect)
+						prevAutoReconnect = currentSettings.AutoReconnect
+					}
+					settingsRendered = true
 
 					if connected {
 						systray.SetTemplateIcon(iconConn(), iconConn())
@@ -274,10 +346,24 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 						}
 					} else {
 						systray.SetTemplateIcon(iconDisc(), iconDisc())
+						if statusValue == statusConnecting || statusValue == statusReconnecting {
+							mDisconnect.Show()
+						} else {
+							mDisconnect.Hide()
+						}
 
-						if "⚫  Disconnected" != prevStatus {
-							mStatusLine.SetTitle("⚫  Disconnected")
-							prevStatus = "⚫  Disconnected"
+						statusTitle := "⚫  Disconnected"
+						switch statusValue {
+						case statusConnecting:
+							statusTitle = "🟡  Connecting"
+						case statusReconnecting:
+							statusTitle = "🟠  Reconnecting"
+						case statusFailed:
+							statusTitle = "🔴  Operation failed"
+						}
+						if statusTitle != prevStatus {
+							mStatusLine.SetTitle(statusTitle)
+							prevStatus = statusTitle
 						}
 
 						// Hide rows only on transition. (issue 8)
@@ -287,6 +373,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 							mTotals.Hide()
 							mDisconnect.Hide()
 							mConnect.Show()
+							mReconnect.Show()
 							for _, pi := range profileItems {
 								title := "    " + pi.profile.Name
 								if flag := profileFlag(pi.profile); flag != "" {
@@ -335,9 +422,29 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 							return
 						}
 					}
+				case <-mReconnect.ClickedCh:
+					select {
+					case cmdCh <- vpnCmd{kind: cmdReconnect}:
+					case <-ctx.Done():
+						return
+					}
 				case <-mDisconnect.ClickedCh:
 					select {
 					case cmdCh <- vpnCmd{kind: cmdStop}:
+					case <-ctx.Done():
+						return
+					}
+				case <-mAutoConnect.ClickedCh:
+					value := !settings.snapshot().AutoConnect
+					select {
+					case cmdCh <- vpnCmd{kind: cmdSettings, settings: connectionSettingsPatch{AutoConnect: &value}}:
+					case <-ctx.Done():
+						return
+					}
+				case <-mAutoReconnect.ClickedCh:
+					value := !settings.snapshot().AutoReconnect
+					select {
+					case cmdCh <- vpnCmd{kind: cmdSettings, settings: connectionSettingsPatch{AutoReconnect: &value}}:
 					case <-ctx.Done():
 						return
 					}

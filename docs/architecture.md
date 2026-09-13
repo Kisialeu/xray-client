@@ -101,6 +101,27 @@ fallback implementations.
 7. On disconnect, cleanup runs (routes removed, DNS restored)
 ```
 
+### Connection Settings and Lifecycle Control
+
+`ConnectionSettings` is a typed, session-only model with both
+`AutoConnect` and `AutoReconnect` enabled by default. The embedded tray and
+daemon-backed tray render these values as flat checkable menu items because
+the systray dependency does not expose submenus.
+
+All lifecycle actions are submitted to the existing unbuffered controller
+command channel. The controller is the only owner of the session cancel
+function and waits for the current reconnect loop to finish before starting a
+replacement. `Disconnect` therefore cancels the reconnect context as well as
+the active Client.
+
+The reconnect loop observes a controller-owned settings state. When
+`AutoReconnect` is disabled, the loop exits after its current tunnel teardown
+and any pending backoff wait is interrupted. Re-enabling it changes future
+failures only; it does not create a second loop. A failed operation leaves the
+shared status as `operation_failed` until a subsequent lifecycle action changes
+it. Enabling `AutoConnect` while the controller is idle starts the selected
+profile; changing it during an active tunnel does not interrupt that tunnel.
+
 ## Component Descriptions
 
 ### `client.go` - TUN Proxy Manager
@@ -134,6 +155,9 @@ logging.
 | POST /connect | POST | /connect | Required | Switch profile by name |
 | POST /disconnect | POST | /disconnect | Required | Terminate session |
 | POST /refresh | POST | /refresh | Required | Re-fetch subscription |
+| GET /settings | GET | /settings | Required | Read session-only connection settings |
+| POST /settings | POST | /settings | Required | Update connection settings |
+| POST /reconnect | POST | /reconnect | Required | Restart selected profile |
 
 **Authentication:** Bearer token from control.token file (hex-encoded 32-byte random)
 Protected against: CORS preflight, origin header leaks, oversized requests (4096 byte limit)
