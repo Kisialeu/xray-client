@@ -4,13 +4,39 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestTrayClientProfileStateConcurrentRefreshAndPing(t *testing.T) {
+	state := newTrayClientProfileState()
+	if !state.add(trayClientProfileItem{name: "initial"}) {
+		t.Fatal("initial profile was not added")
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		name := fmt.Sprintf("profile-%d", i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			state.add(trayClientProfileItem{name: name})
+			state.updatePing([]PingResult{{Name: name, LatencyMs: 10, Flag: "DE"}})
+			_ = state.snapshot()
+			_ = state.flag(name)
+		}()
+	}
+	wg.Wait()
+	if got := len(state.snapshot()); got != 33 {
+		t.Fatalf("profile state contains %d items, want 33", got)
+	}
+}
 
 func TestDaemonSettingsUpdaterSerializesRapidToggles(t *testing.T) {
 	var current atomic.Value

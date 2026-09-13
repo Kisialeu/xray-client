@@ -52,6 +52,89 @@ type daemonProfiles struct {
 	Active string `json:"active"`
 }
 
+type trayClientProfileItem struct {
+	name         string
+	flag         string
+	item         *systray.MenuItem
+	latency      int
+	latencyKnown bool
+}
+
+// trayClientProfileState owns profile menu metadata shared by refresh, ping,
+// and status-rendering goroutines.
+type trayClientProfileState struct {
+	mu        sync.RWMutex
+	items     []trayClientProfileItem
+	latencies map[string]int
+	flags     map[string]string
+}
+
+func newTrayClientProfileState() *trayClientProfileState {
+	return &trayClientProfileState{
+		latencies: make(map[string]int),
+		flags:     make(map[string]string),
+	}
+}
+
+func (s *trayClientProfileState) add(item trayClientProfileItem) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.items {
+		if existing.name == item.name {
+			return false
+		}
+	}
+	s.items = append(s.items, item)
+	return true
+}
+
+func (s *trayClientProfileState) contains(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, item := range s.items {
+		if item.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *trayClientProfileState) updatePing(results []PingResult) []trayClientProfileItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, result := range results {
+		s.latencies[result.Name] = result.LatencyMs
+		if result.Flag != "" {
+			s.flags[result.Name] = result.Flag
+		}
+	}
+	return s.snapshotLocked()
+}
+
+func (s *trayClientProfileState) flag(name string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.flags[name]
+}
+
+func (s *trayClientProfileState) snapshot() []trayClientProfileItem {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshotLocked()
+}
+
+func (s *trayClientProfileState) snapshotLocked() []trayClientProfileItem {
+	items := make([]trayClientProfileItem, len(s.items))
+	copy(items, s.items)
+	for i := range items {
+		if latency, ok := s.latencies[items[i].name]; ok {
+			items[i].latency = latency
+			items[i].latencyKnown = true
+		}
+	}
+	return items
+}
+
 // daemonSettingsUpdater serializes tray setting toggles so each toggle reads
 // the result of the previous daemon update.
 type daemonSettingsUpdater struct {
@@ -333,12 +416,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 		mProfilesLabel := systray.AddMenuItem("Profiles", "")
 		mProfilesLabel.Disable()
 
-		type profileItem struct {
-			name string
-			flag string
-			item *systray.MenuItem
-		}
-		var profileItems []profileItem
+		profileState := newTrayClientProfileState()
 		var selectedProfile atomic.Value
 		selectedProfile.Store("")
 		var currentSettings atomic.Value
@@ -368,22 +446,13 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 			return prefix + name
 		}
 
-		latencies := make(map[string]int)
-		flags := make(map[string]string)
-
 		updatePingResults := func(results []PingResult) {
-			for _, r := range results {
-				latencies[r.Name] = r.LatencyMs
-				if r.Flag != "" {
-					flags[r.Name] = r.Flag
+			for _, pi := range profileState.updatePing(results) {
+				lat := -1
+				if pi.latencyKnown {
+					lat = pi.latency
 				}
-			}
-			for _, pi := range profileItems {
-				lat, ok := latencies[pi.name]
-				if !ok {
-					lat = -1
-				}
-				pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
+				pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, pi.flag))
 			}
 		}
 
@@ -414,7 +483,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 						title = "    " + p.Flag + " " + name
 					}
 					item := systray.AddMenuItem(title, name)
-					profileItems = append(profileItems, profileItem{name: name, flag: p.Flag, item: item})
+					profileState.add(trayClientProfileItem{name: name, flag: p.Flag, item: item})
 
 					go func() {
 						for range item.ClickedCh {
@@ -561,14 +630,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									return
 								}
 								for _, p := range profs.Profiles {
-									exists := false
-									for _, pi := range profileItems {
-										if pi.name == p.Name {
-											exists = true
-											break
-										}
-									}
-									if exists {
+									if profileState.contains(p.Name) {
 										continue
 									}
 									item := systray.AddMenuItem("    "+p.Name, p.Name)
@@ -577,7 +639,9 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 										title = "    " + p.Flag + " " + p.Name
 									}
 									item.SetTitle(title)
-									profileItems = append(profileItems, profileItem{name: p.Name, flag: p.Flag, item: item})
+									if !profileState.add(trayClientProfileItem{name: p.Name, flag: p.Flag, item: item}) {
+										continue
+									}
 									name := p.Name
 									go func() {
 										for range item.ClickedCh {
@@ -677,7 +741,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 							}
 							if statusValue == statusConnected {
 								pName := st.ActiveProfile
-								if f := flags[pName]; f != "" {
+								if f := profileState.flag(pName); f != "" {
 									if icon := renderEmojiIcon(f, 22); icon != nil {
 										systray.SetIcon(icon)
 									}
@@ -689,7 +753,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									session = formatDuration(time.Duration(st.UptimeS) * time.Second)
 								}
 
-								flagStr := flags[pName]
+								flagStr := profileState.flag(pName)
 								status := "🟢  "
 								if flagStr != "" {
 									status += flagStr + " "
@@ -726,12 +790,12 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 
 								if pName != prevActiveName {
 									triggerServerInfo()
-									for _, pi := range profileItems {
-										lat, ok := latencies[pi.name]
-										if !ok {
-											lat = -1
+									for _, pi := range profileState.snapshot() {
+										lat := -1
+										if pi.latencyKnown {
+											lat = pi.latency
 										}
-										pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
+										pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, pi.flag))
 
 									}
 									prevActiveName = pName
@@ -770,12 +834,12 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									mInfoProto.SetTitle("    Protocol: —")
 									mInfoDNS.SetTitle("    DNS: —")
 									mInfoLeak.SetTitle("    IP Leak: —")
-									for _, pi := range profileItems {
-										lat, ok := latencies[pi.name]
-										if !ok {
-											lat = -1
+									for _, pi := range profileState.snapshot() {
+										lat := -1
+										if pi.latencyKnown {
+											lat = pi.latency
 										}
-										pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
+										pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, pi.flag))
 									}
 									prevActiveName = ""
 								}
