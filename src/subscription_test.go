@@ -19,7 +19,7 @@ func TestParseSubscription_Base64Std(t *testing.T) {
 	links := "vless://user@host1:443#Server-1\nvless://user@host2:443#Server-2\n"
 	encoded := base64.StdEncoding.EncodeToString([]byte(links))
 
-	profiles, err := parseSubscription(discardLogger, encoded)
+	profiles, _, err := parseSubscription(discardLogger, encoded)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestParseSubscription_Base64Raw(t *testing.T) {
 	links := "vless://user@host1:443#A\nvless://user@host2:443#B\n"
 	encoded := base64.RawStdEncoding.EncodeToString([]byte(links))
 
-	profiles, err := parseSubscription(discardLogger, encoded)
+	profiles, _, err := parseSubscription(discardLogger, encoded)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestParseSubscription_Base64URLSafe(t *testing.T) {
 	links := "vless://user@host1:443#A\nvless://user@host2:443#B\n"
 	encoded := base64.URLEncoding.EncodeToString([]byte(links))
 
-	profiles, err := parseSubscription(discardLogger, encoded)
+	profiles, _, err := parseSubscription(discardLogger, encoded)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestParseSubscription_Base64RawURL(t *testing.T) {
 	links := "vless://user@host1:443#A\nvless://user@host2:443#B\n"
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(links))
 
-	profiles, err := parseSubscription(discardLogger, encoded)
+	profiles, _, err := parseSubscription(discardLogger, encoded)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestParseSubscription_Base64MIMEWrapped(t *testing.T) {
 		wrapped += encoded[i:end] + "\n"
 	}
 
-	profiles, err := parseSubscription(discardLogger, wrapped)
+	profiles, _, err := parseSubscription(discardLogger, wrapped)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestParseSubscription_Base64MIMEWrapped(t *testing.T) {
 func TestParseSubscription_PlainText(t *testing.T) {
 	raw := "vless://user@host1:443#Plain\n# comment\nvless://user@host2:443#Two\n"
 
-	profiles, err := parseSubscription(discardLogger, raw)
+	profiles, _, err := parseSubscription(discardLogger, raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestParseSubscription_PlainTextAllSchemes(t *testing.T) {
 		"ssr://dummydata",
 	}, "\n")
 
-	profiles, err := parseSubscription(discardLogger, raw)
+	profiles, _, err := parseSubscription(discardLogger, raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestParseSubscription_PlainTextAllSchemes(t *testing.T) {
 func TestParseSubscription_Dedup(t *testing.T) {
 	raw := "vless://user@host:443#S\nvless://user@host:443#S\n"
 
-	profiles, err := parseSubscription(discardLogger, raw)
+	profiles, _, err := parseSubscription(discardLogger, raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestParseSubscription_DedupKeepsFirst(t *testing.T) {
 	// Same link repeated twice — first occurrence wins
 	raw := "vless://user@host:443#Name\nvless://user@host:443#Name\n"
 
-	profiles, err := parseSubscription(discardLogger, raw)
+	profiles, _, err := parseSubscription(discardLogger, raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestParseSubscription_DifferentFragmentsDifferentLinks(t *testing.T) {
 	// Different fragments make them distinct links
 	raw := "vless://user@host:443#First\nvless://user@host:443#Second\n"
 
-	profiles, err := parseSubscription(discardLogger, raw)
+	profiles, _, err := parseSubscription(discardLogger, raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,14 +166,14 @@ func TestParseSubscription_DifferentFragmentsDifferentLinks(t *testing.T) {
 }
 
 func TestParseSubscription_Empty(t *testing.T) {
-	_, err := parseSubscription(discardLogger, "")
+	_, _, err := parseSubscription(discardLogger, "")
 	if err == nil {
 		t.Fatal("expected error for empty subscription")
 	}
 }
 
 func TestParseSubscription_WhitespaceOnly(t *testing.T) {
-	_, err := parseSubscription(discardLogger, "   \n\t\n   ")
+	_, _, err := parseSubscription(discardLogger, "   \n\t\n   ")
 	if err == nil {
 		t.Fatal("expected error for whitespace-only subscription")
 	}
@@ -181,7 +181,7 @@ func TestParseSubscription_WhitespaceOnly(t *testing.T) {
 
 func TestParseSubscription_CommentsOnly(t *testing.T) {
 	raw := "\n\n# comment\n# another\n"
-	_, err := parseSubscription(discardLogger, raw)
+	_, _, err := parseSubscription(discardLogger, raw)
 	if err == nil {
 		t.Fatal("expected error for comment-only subscription")
 	}
@@ -189,14 +189,14 @@ func TestParseSubscription_CommentsOnly(t *testing.T) {
 
 func TestParseSubscription_RejectsGarbageHTML(t *testing.T) {
 	raw := "<html><body>404 Not Found</body></html>"
-	_, err := parseSubscription(discardLogger, raw)
+	_, _, err := parseSubscription(discardLogger, raw)
 	if err == nil {
 		t.Fatal("expected error for HTML response")
 	}
 }
 
 func TestParseSubscription_RejectsRandomText(t *testing.T) {
-	_, err := parseSubscription(discardLogger, "this is not a subscription response at all")
+	_, _, err := parseSubscription(discardLogger, "this is not a subscription response at all")
 	if err == nil {
 		t.Fatal("expected error for random text")
 	}
@@ -204,7 +204,7 @@ func TestParseSubscription_RejectsRandomText(t *testing.T) {
 
 func TestParseSubscription_SkipsNonProxyLines(t *testing.T) {
 	raw := "http://example.com\nvless://user@host:443#Good\nhttps://junk\n"
-	profiles, err := parseSubscription(discardLogger, raw)
+	profiles, _, err := parseSubscription(discardLogger, raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestParseSubscription_SkipsNonProxyLines(t *testing.T) {
 
 func TestParseSubscription_LeadingTrailingWhitespace(t *testing.T) {
 	raw := "  \n  vless://user@host:443#Trimmed  \n  "
-	profiles, err := parseSubscription(discardLogger, raw)
+	profiles, _, err := parseSubscription(discardLogger, raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestParseSubscription_LeadingTrailingWhitespace(t *testing.T) {
 
 func TestParseSubscription_CaseInsensitiveScheme(t *testing.T) {
 	raw := "VLESS://user@host:443#Upper\nVmess://data#Mixed\n"
-	profiles, err := parseSubscription(discardLogger, raw)
+	profiles, _, err := parseSubscription(discardLogger, raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestParseSubscription_CaseInsensitiveScheme(t *testing.T) {
 
 func TestParseSubscription_SingleLink(t *testing.T) {
 	raw := "vless://user@host:443#Solo"
-	profiles, err := parseSubscription(discardLogger, raw)
+	profiles, _, err := parseSubscription(discardLogger, raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -664,15 +664,15 @@ func TestFetchSubscription_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	profiles, err := fetchSubscription(discardLogger, srv.URL)
+	result, err := fetchSubscription(discardLogger, srv.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(profiles) != 2 {
-		t.Fatalf("got %d profiles, want 2", len(profiles))
+	if len(result.profiles) != 2 {
+		t.Fatalf("got %d profiles, want 2", len(result.profiles))
 	}
-	if profiles[0].Name != "Server-A" {
-		t.Errorf("got %q, want Server-A", profiles[0].Name)
+	if result.profiles[0].Name != "Server-A" {
+		t.Errorf("got %q, want Server-A", result.profiles[0].Name)
 	}
 }
 
@@ -740,12 +740,12 @@ func TestFetchSubscription_PlainTextBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	profiles, err := fetchSubscription(discardLogger, srv.URL)
+	result, err := fetchSubscription(discardLogger, srv.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(profiles) != 2 {
-		t.Fatalf("got %d profiles, want 2", len(profiles))
+	if len(result.profiles) != 2 {
+		t.Fatalf("got %d profiles, want 2", len(result.profiles))
 	}
 }
 
@@ -760,7 +760,7 @@ func TestLoadSubscriptionProfiles_SelectByName(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	profile, all, err := loadSubscriptionProfiles(srv.URL, "Beta", discardLogger)
+	profile, all, _, err := loadSubscriptionProfiles(srv.URL, "Beta", discardLogger)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -781,7 +781,7 @@ func TestLoadSubscriptionProfiles_DefaultFirst(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	profile, _, err := loadSubscriptionProfiles(srv.URL, "", discardLogger)
+	profile, _, _, err := loadSubscriptionProfiles(srv.URL, "", discardLogger)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -799,7 +799,7 @@ func TestLoadSubscriptionProfiles_NotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := loadSubscriptionProfiles(srv.URL, "missing", discardLogger)
+	_, _, _, err := loadSubscriptionProfiles(srv.URL, "missing", discardLogger)
 	if err == nil {
 		t.Fatal("expected error for missing profile")
 	}
@@ -814,7 +814,7 @@ func TestLoadSubscriptionProfiles_FetchError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := loadSubscriptionProfiles(srv.URL, "", discardLogger)
+	_, _, _, err := loadSubscriptionProfiles(srv.URL, "", discardLogger)
 	if err == nil {
 		t.Fatal("expected error when fetch fails")
 	}

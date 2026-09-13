@@ -21,6 +21,7 @@ func runDaemon(
 	maxReconnects int,
 	addr string,
 	reload reloadFunc,
+	dnsServers []string,
 ) {
 	var mu sync.RWMutex
 	profiles := allProfiles
@@ -47,7 +48,7 @@ func runDaemon(
 			done = d
 			go func() {
 				defer close(d)
-				runWithReconnect(vpnCtx, logger, s, p, maxReconnects)
+				runWithReconnect(vpnCtx, logger, s, p, maxReconnects, dnsServers)
 			}()
 		}
 
