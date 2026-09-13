@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -421,9 +422,15 @@ func TestLoadYAMLAll_WithSubscription(t *testing.T) {
 	links := "vless://user@sub-host:443#SubProfile\n"
 	encoded := base64.StdEncoding.EncodeToString([]byte(links))
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, encoded)
 	}))
+	srv.Listener = listener
+	srv.Start()
 	defer srv.Close()
 
 	yaml := fmt.Sprintf(`

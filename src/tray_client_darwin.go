@@ -58,6 +58,7 @@ type trayClientProfileItem struct {
 	item         *systray.MenuItem
 	latency      int
 	latencyKnown bool
+	active       bool
 }
 
 // trayClientProfileState owns profile menu metadata shared by refresh, ping,
@@ -84,16 +85,44 @@ func (s *trayClientProfileState) add(item trayClientProfileItem) bool {
 			return false
 		}
 	}
+	item.active = true
 	s.items = append(s.items, item)
 	return true
 }
 
-func (s *trayClientProfileState) contains(name string) bool {
+func (s *trayClientProfileState) reconcile(names map[string]string) []trayClientProfileItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed []trayClientProfileItem
+	for i := range s.items {
+		flag, ok := names[s.items[i].name]
+		s.items[i].active = ok
+		if ok {
+			s.items[i].flag = flag
+		} else {
+			removed = append(removed, s.items[i])
+		}
+	}
+	return removed
+}
+
+func (s *trayClientProfileState) existing(name string) (trayClientProfileItem, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, item := range s.items {
 		if item.name == name {
-			return true
+			return item, true
+		}
+	}
+	return trayClientProfileItem{}, false
+}
+
+func (s *trayClientProfileState) active(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, item := range s.items {
+		if item.name == name {
+			return item.active
 		}
 	}
 	return false
@@ -211,12 +240,22 @@ func (dc *daemonClient) request(ctx context.Context, method, path string, body i
 	return dc.client.Do(req)
 }
 
+func checkDaemonResponse(resp *http.Response, endpoint string) error {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("%s: status %d", endpoint, resp.StatusCode)
+	}
+	return nil
+}
+
 func (dc *daemonClient) status(ctx context.Context) (daemonStatus, error) {
 	resp, err := dc.request(ctx, http.MethodGet, "/status", nil)
 	if err != nil {
 		return daemonStatus{}, err
 	}
 	defer resp.Body.Close()
+	if err := checkDaemonResponse(resp, "/status"); err != nil {
+		return daemonStatus{}, err
+	}
 	var s daemonStatus
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
 		return daemonStatus{}, err
@@ -230,6 +269,9 @@ func (dc *daemonClient) profiles(ctx context.Context) (daemonProfiles, error) {
 		return daemonProfiles{}, err
 	}
 	defer resp.Body.Close()
+	if err := checkDaemonResponse(resp, "/profiles"); err != nil {
+		return daemonProfiles{}, err
+	}
 	var p daemonProfiles
 	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
 		return daemonProfiles{}, err
@@ -247,6 +289,9 @@ func (dc *daemonClient) connect(ctx context.Context, name string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if err := checkDaemonResponse(resp, "/connect"); err != nil {
+		return err
+	}
 	var result struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
@@ -266,6 +311,9 @@ func (dc *daemonClient) refresh(ctx context.Context) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if err := checkDaemonResponse(resp, "/refresh"); err != nil {
+		return err
+	}
 	var result struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
@@ -285,6 +333,9 @@ func (dc *daemonClient) ping(ctx context.Context) ([]PingResult, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := checkDaemonResponse(resp, "/ping"); err != nil {
+		return nil, err
+	}
 	var result struct {
 		Results []PingResult `json:"results"`
 	}
@@ -300,8 +351,8 @@ func (dc *daemonClient) serverInfo(ctx context.Context) (*ServerInfo, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server-info: status %d", resp.StatusCode)
+	if err := checkDaemonResponse(resp, "/server-info"); err != nil {
+		return nil, err
 	}
 	var info ServerInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
@@ -316,6 +367,9 @@ func (dc *daemonClient) disconnect(ctx context.Context) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if err := checkDaemonResponse(resp, "/disconnect"); err != nil {
+		return err
+	}
 	var result struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
@@ -335,8 +389,8 @@ func (dc *daemonClient) settings(ctx context.Context) (daemonSettings, error) {
 		return daemonSettings{}, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return daemonSettings{}, fmt.Errorf("settings: status %d", resp.StatusCode)
+	if err := checkDaemonResponse(resp, "/settings"); err != nil {
+		return daemonSettings{}, err
 	}
 	var settings daemonSettings
 	if err := json.NewDecoder(resp.Body).Decode(&settings); err != nil {
@@ -355,6 +409,9 @@ func (dc *daemonClient) updateSettings(ctx context.Context, patch connectionSett
 		return daemonSettings{}, err
 	}
 	defer resp.Body.Close()
+	if err := checkDaemonResponse(resp, "/settings"); err != nil {
+		return daemonSettings{}, err
+	}
 	var result struct {
 		OK            bool   `json:"ok"`
 		Error         string `json:"error"`
@@ -376,6 +433,9 @@ func (dc *daemonClient) reconnect(ctx context.Context) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if err := checkDaemonResponse(resp, "/reconnect"); err != nil {
+		return err
+	}
 	var result struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
@@ -490,6 +550,9 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 
 					go func() {
 						for range item.ClickedCh {
+							if !profileState.active(name) {
+								continue
+							}
 							selectedProfile.Store(name)
 							logger.Info("switching profile", "profile", name)
 							if err := dc.connect(ctx, name); err != nil {
@@ -632,8 +695,33 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									logger.Error("fetch profiles after refresh", "err", err)
 									return
 								}
+								refreshedNames := make(map[string]string, len(profs.Profiles))
 								for _, p := range profs.Profiles {
-									if profileState.contains(p.Name) {
+									refreshedNames[p.Name] = p.Flag
+								}
+								for _, pi := range profileState.reconcile(refreshedNames) {
+									trayHide(pi.item)
+									trayDisable(pi.item)
+								}
+								selected, _ := selectedProfile.Load().(string)
+								if _, ok := refreshedNames[selected]; !ok {
+									if profs.Active != "" {
+										selectedProfile.Store(profs.Active)
+									} else if len(profs.Profiles) > 0 {
+										selectedProfile.Store(profs.Profiles[0].Name)
+									} else {
+										selectedProfile.Store("")
+									}
+								}
+								for _, p := range profs.Profiles {
+									if existing, ok := profileState.existing(p.Name); ok {
+										title := "    " + p.Name
+										if p.Flag != "" {
+											title = "    " + p.Flag + " " + p.Name
+										}
+										traySetTitle(existing.item, title)
+										trayEnable(existing.item)
+										trayShow(existing.item)
 										continue
 									}
 									item := systray.AddMenuItem("    "+p.Name, p.Name)
@@ -648,6 +736,9 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 									name := p.Name
 									go func() {
 										for range item.ClickedCh {
+											if !profileState.active(name) {
+												continue
+											}
 											selectedProfile.Store(name)
 											logger.Info("switching profile", "profile", name)
 											if err := dc.connect(ctx, name); err != nil {

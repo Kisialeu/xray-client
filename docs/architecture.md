@@ -154,7 +154,7 @@ logging.
 | GET /server-info | GET | /server-info | Required | Active server metadata |
 | POST /connect | POST | /connect | Required | Switch profile by name |
 | POST /disconnect | POST | /disconnect | Required | Terminate session |
-| POST /refresh | POST | /refresh | Required | Re-fetch subscription |
+| POST /refresh | POST | /refresh | Required | Re-fetch subscription; returns 409 while protected mode is active |
 | GET /settings | GET | /settings | Required | Read session-only connection settings |
 | POST /settings | POST | /settings | Required | Update connection settings |
 | POST /reconnect | POST | /reconnect | Required | Restart selected profile |

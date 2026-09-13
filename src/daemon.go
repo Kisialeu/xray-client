@@ -339,6 +339,10 @@ func runDaemon(
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "no subscription or config to refresh"})
 			return
 		}
+		if protectionActive() {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": "refresh is unavailable while protected mode is active"})
+			return
+		}
 		updated, err := reload(logger)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})

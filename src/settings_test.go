@@ -14,6 +14,20 @@ import (
 	"time"
 )
 
+func TestCheckDaemonResponseRejectsNonSuccess(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusConflict}
+	if err := checkDaemonResponse(resp, "/refresh"); err == nil {
+		t.Fatal("expected non-success response to be rejected")
+	}
+}
+
+func TestCheckDaemonResponseAcceptsSuccess(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusOK}
+	if err := checkDaemonResponse(resp, "/status"); err != nil {
+		t.Fatalf("success response rejected: %v", err)
+	}
+}
+
 func TestTrayClientProfileStateConcurrentRefreshAndPing(t *testing.T) {
 	state := newTrayClientProfileState()
 	if !state.add(trayClientProfileItem{name: "initial"}) {
@@ -50,6 +64,25 @@ func TestTrayClientProfileStateUsesPingFlagInSnapshot(t *testing.T) {
 	}
 	if got != "🇩🇪" {
 		t.Fatalf("snapshot flag = %q, want %q", got, "🇩🇪")
+	}
+}
+
+func TestTrayClientProfileStateReconcilesRemovedProfiles(t *testing.T) {
+	state := newTrayClientProfileState()
+	state.add(trayClientProfileItem{name: "keep"})
+	state.add(trayClientProfileItem{name: "remove"})
+
+	removed := state.reconcile(map[string]string{"keep": ""})
+	if len(removed) != 1 || removed[0].name != "remove" || removed[0].active {
+		t.Fatalf("removed profiles = %+v", removed)
+	}
+	if state.active("remove") {
+		t.Fatal("removed profile remains active")
+	}
+
+	state.reconcile(map[string]string{"keep": "", "remove": ""})
+	if !state.active("remove") {
+		t.Fatal("reintroduced profile was not reactivated")
 	}
 }
 

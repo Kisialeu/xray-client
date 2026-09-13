@@ -108,7 +108,9 @@ func overrideDNS(servers []string, logger *slog.Logger) *dnsOverride {
 				return nil
 			}
 			old := &dnsOverride{service: saved.Service, originalDNS: saved.DNS, journal: journal}
-			old.restore(logger)
+			if err := old.restore(logger); err != nil {
+				return nil
+			}
 			if _, err := os.Stat(journal); !os.IsNotExist(err) {
 				return nil
 			}
@@ -158,9 +160,9 @@ func overrideDNS(servers []string, logger *slog.Logger) *dnsOverride {
 	return &dnsOverride{service: service, originalDNS: original, journal: journal}
 }
 
-func (d *dnsOverride) restore(logger *slog.Logger) {
+func (d *dnsOverride) restore(logger *slog.Logger) error {
 	if d == nil {
-		return
+		return nil
 	}
 	var err error
 	if len(d.originalDNS) == 0 {
@@ -171,7 +173,7 @@ func (d *dnsOverride) restore(logger *slog.Logger) {
 	}
 	if err != nil {
 		logger.Warn("DNS restore failed", "service", d.service, "err", err)
-		return
+		return err
 	}
 
 	if d.journal != "" {
@@ -181,4 +183,5 @@ func (d *dnsOverride) restore(logger *slog.Logger) {
 	_ = dnsCommand("/usr/bin/killall", "-HUP", "mDNSResponder").Run()
 
 	logger.Info("DNS restored", "service", d.service, "original", d.originalDNS)
+	return nil
 }

@@ -118,6 +118,7 @@ type connState int
 const (
 	stateIdle connState = iota
 	stateConnected
+	stateDisconnecting
 )
 
 // Proxy identifies the local SOCKS5 endpoint used by the packet-to-SOCKS
@@ -212,6 +213,9 @@ func (c *Client) Connect(link string) error {
 	if c.state == stateConnected {
 		return errors.New("already connected: call Disconnect first")
 	}
+	if c.state == stateDisconnecting {
+		return errors.New("disconnect in progress")
+	}
 
 	c.cfg.Logger.Debug("connecting to tunnel", "cfg", c.cfg)
 
@@ -281,7 +285,7 @@ func (c *Client) Connect(link string) error {
 			runRollback()
 			return fmt.Errorf("DNS protection could not be configured")
 		}
-		rollback = append(rollback, func() error { c.dnsState.restore(c.cfg.Logger); return nil })
+		rollback = append(rollback, func() error { return c.dnsState.restore(c.cfg.Logger) })
 	}
 
 	c.tunnelStopped = make(chan error, 1)
@@ -333,18 +337,21 @@ func (c *Client) Disconnect(ctx context.Context) error {
 	c.xrayRouteAdded = false
 	c.tunRouteAdded = false
 	c.dnsState = nil
-	c.state = stateIdle
+	c.state = stateDisconnecting
 
 	c.mu.Unlock()
 
 	// Slow path — no lock held.
 	protectionErr := protectInterface("")
-	dnsState.restore(c.cfg.Logger)
+	dnsErr := dnsState.restore(c.cfg.Logger)
 	stopFn()
 
 	var errs []error
 	if protectionErr != nil {
 		errs = append(errs, protectionErr)
+	}
+	if dnsErr != nil {
+		errs = append(errs, fmt.Errorf("restore DNS: %w", dnsErr))
 	}
 	if err := tunnel.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close tunnel: %w", err))
@@ -365,16 +372,39 @@ func (c *Client) Disconnect(ctx context.Context) error {
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, disconnectTimeout)
 	defer cancel()
+	tunnelStoppedCleanly := false
 	select {
 	case tunErr := <-tunnelStopped:
+		tunnelStoppedCleanly = true
 		if tunErr != nil {
 			errs = append(errs, fmt.Errorf("tunnel copy: %w", tunErr))
 		}
 	case <-timeoutCtx.Done():
 		errs = append(errs, fmt.Errorf("waiting for tunnel stop: %w", timeoutCtx.Err()))
+		go c.resetAfterTunnelStop(tunnelStopped)
 	}
 
-	return errors.Join(errs...)
+	err := errors.Join(errs...)
+	if tunnelStoppedCleanly {
+		c.mu.Lock()
+		if c.state == stateDisconnecting {
+			c.state = stateIdle
+		}
+		c.mu.Unlock()
+	}
+	return err
+}
+
+// resetAfterTunnelStop releases the lifecycle gate after a timed-out stop
+// eventually completes. Until then, Connect must remain blocked because the
+// old tunnel may still own routes, DNS, or the TUN device.
+func (c *Client) resetAfterTunnelStop(tunnelStopped <-chan error) {
+	<-tunnelStopped
+	c.mu.Lock()
+	if c.state == stateDisconnecting {
+		c.state = stateIdle
+	}
+	c.mu.Unlock()
 }
 
 // BytesRead returns the number of bytes read from the current tunnel session.

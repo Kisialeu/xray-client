@@ -148,6 +148,13 @@ xray-cli --tray --daemon-addr 127.0.0.1:19099
 - `POST /connect` — `{"profile": "name"}` to switch
 - `POST /disconnect` — stop VPN
 - `POST /refresh` — re-fetch subscription profiles
+
+Connection settings are session-only and reset to enabled when the daemon
+starts. Auto-connect controls startup and idle auto-start; disabling it does
+not disconnect an active tunnel. Disconnect cancels pending reconnect attempts,
+and connect, reconnect, disconnect, and profile switching are serialized by
+the daemon controller. Protected mode rejects profile refreshes because its
+PF endpoint allowlist cannot be changed safely during refresh.
 - `GET /settings` — current connection settings and lifecycle status
 - `POST /settings` — update one or both settings, for example `{"auto_reconnect": false}`
 - `POST /reconnect` — stop and restart the currently selected profile

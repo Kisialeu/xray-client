@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -140,7 +141,10 @@ func TestDaemon_Status_ContentType(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, _ := daemonTestHTTP.Get("http://" + addr + "/status")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/status")
+	if err != nil {
+		t.Fatalf("GET /status: %v", err)
+	}
 	defer resp.Body.Close()
 	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
 		t.Errorf("Content-Type = %q", ct)
@@ -186,7 +190,10 @@ func TestDaemon_Profiles_ShowsActive(t *testing.T) {
 	p := &Profile{Name: "beta"}
 	s.activeProfile.Store(p)
 
-	resp, _ := daemonTestHTTP.Get("http://" + addr + "/profiles")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/profiles")
+	if err != nil {
+		t.Fatalf("GET /profiles: %v", err)
+	}
 	defer resp.Body.Close()
 
 	var got struct {
@@ -359,7 +366,10 @@ func TestDaemon_Refresh_AddsProfiles(t *testing.T) {
 	defer cancel()
 
 	// Before refresh: 1 profile
-	resp, _ := daemonTestHTTP.Get("http://" + addr + "/profiles")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/profiles")
+	if err != nil {
+		t.Fatalf("GET /profiles: %v", err)
+	}
 	var before struct {
 		Profiles []struct{ Name string } `json:"profiles"`
 	}
@@ -370,7 +380,7 @@ func TestDaemon_Refresh_AddsProfiles(t *testing.T) {
 	}
 
 	// Refresh
-	resp, err := daemonTestHTTP.Post("http://"+addr+"/refresh", "application/json", nil)
+	resp, err = daemonTestHTTP.Post("http://"+addr+"/refresh", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /refresh: %v", err)
 	}
@@ -402,6 +412,32 @@ func TestDaemon_Refresh_NoReloadFunc(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestDaemon_Refresh_ProtectedMode(t *testing.T) {
+	reload := func(_ *slog.Logger) ([]Profile, error) {
+		return nil, fmt.Errorf("reload should not be called while protected mode is active")
+	}
+	addr, _, cancel := startTestDaemonWithReload(t, reload)
+	defer cancel()
+
+	protection.Lock()
+	protection.active = true
+	protection.Unlock()
+	defer func() {
+		protection.Lock()
+		protection.active = false
+		protection.Unlock()
+	}()
+
+	resp, err := daemonTestHTTP.Post("http://"+addr+"/refresh", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /refresh: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusConflict)
 	}
 }
 
@@ -457,7 +493,10 @@ func TestWriteJSON(t *testing.T) {
 	defer cancel()
 
 	// /profiles uses writeJSON under the hood via json.Encode
-	resp, _ := daemonTestHTTP.Get("http://" + addr + "/profiles")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/profiles")
+	if err != nil {
+		t.Fatalf("GET /profiles: %v", err)
+	}
 	defer resp.Body.Close()
 
 	ct := resp.Header.Get("Content-Type")

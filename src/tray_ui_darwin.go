@@ -34,6 +34,12 @@ func trayDisable(item *systray.MenuItem) {
 	item.Disable()
 }
 
+func trayEnable(item *systray.MenuItem) {
+	trayUIMu.Lock()
+	defer trayUIMu.Unlock()
+	item.Enable()
+}
+
 func traySetIcon(icon []byte) {
 	trayUIMu.Lock()
 	defer trayUIMu.Unlock()
