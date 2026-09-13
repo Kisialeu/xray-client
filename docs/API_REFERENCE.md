@@ -14,7 +14,7 @@ The HTTP control API is available when running in daemon mode with `--daemon-add
 | GET | `/status` | - | Returns JSON with current status: connected, active_profile, uptime_s, bytes_in/out, reconnects |
 | GET | `/profiles` | - | Returns available profiles list with emoji country flags; includes currently active profile |
 | GET | `/ping` | - | Pings all profiles and returns latency (ms) and GeoIP country for each |
-| GET | `/server-info` | - | Public IP, exit country, protocol, DNS server, IP leak status of active server |
+| GET | `/server-info` | - | Public IP, exit country, protocol, DNS probe result, and IP leak status of active server |
 | POST | `/connect` | `{"profile": "name"}` | Switch to named profile; requires valid profile name |
 | POST | `/disconnect` | - | Terminate current tunnel connection |
 | POST | `/refresh` | - | Re-fetch subscription profiles from remote URL |
@@ -39,6 +39,17 @@ The HTTP control API is available when running in daemon mode with `--daemon-add
 the daemon process starts. Enabling `auto_connect` while the daemon is idle
 starts the selected profile; changing it while connected does not interrupt the
 current tunnel.
+
+`POST /connect` also rejects empty bodies, unknown fields, and trailing JSON
+values with `400 Bad Request`.
+
+`/server-info` reports `ip_leak` as `null` when leak analysis is unavailable;
+otherwise it is a JSON boolean. `dns_server` is the first address returned by
+the effective-resolver DNS probe, when available.
+
+`POST /refresh` returns `409 Conflict` while protected mode is active. Profile
+changes are rejected in that state because the installed PF allowlist cannot
+be updated safely as part of the refresh operation.
 
 The `status` field is one of `disconnected`, `connecting`, `reconnecting`,
 `connected`, or `operation_failed`. `POST /reconnect` and `POST /connect` are

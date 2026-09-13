@@ -58,27 +58,27 @@ func runTray(ctx context.Context, cancel context.CancelFunc, logger *slog.Logger
 
 func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slog.Logger, s *state, initial Profile, profiles []Profile, maxReconnects int, dnsServers []string) func() {
 	return func() {
-		systray.SetTemplateIcon(iconDisc(), iconDisc())
+		traySetTemplateIcon(iconDisc(), iconDisc())
 		systray.SetTooltip("XRay VPN")
 
 		// ── info rows ─────────────────────────────────────────────────────
 		mStatusLine := systray.AddMenuItem("⚫  Disconnected", "")
-		mStatusLine.Disable()
+		trayDisable(mStatusLine)
 		mSession := systray.AddMenuItem("", "")
-		mSession.Disable()
-		mSession.Hide()
+		trayDisable(mSession)
+		trayHide(mSession)
 		mBandwidth := systray.AddMenuItem("", "")
-		mBandwidth.Disable()
-		mBandwidth.Hide()
+		trayDisable(mBandwidth)
+		trayHide(mBandwidth)
 		mTotals := systray.AddMenuItem("", "")
-		mTotals.Disable()
-		mTotals.Hide()
+		trayDisable(mTotals)
+		trayHide(mTotals)
 		systray.AddSeparator()
 
 		// ── profile list ──────────────────────────────────────────────────
 		// systray has no submenu API, so profiles are flat siblings.
 		mProfilesLabel := systray.AddMenuItem("Profiles", "")
-		mProfilesLabel.Disable()
+		trayDisable(mProfilesLabel)
 		type profileItem struct {
 			profile Profile
 			item    *systray.MenuItem
@@ -118,7 +118,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 				if flag := profileFlagFor(pi.profile); flag != "" {
 					title = "    " + flag + " " + pi.profile.Name
 				}
-				pi.item.SetTitle(title)
+				traySetTitle(pi.item, title)
 			}
 		}()
 		systray.AddSeparator()
@@ -127,9 +127,9 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 		mConnect := systray.AddMenuItem("Connect selected profile", "")
 		mReconnect := systray.AddMenuItem("Reconnect now", "")
 		mDisconnect := systray.AddMenuItem("Disconnect and stop", "")
-		mDisconnect.Hide()
+		trayHide(mDisconnect)
 		mSettingsLabel := systray.AddMenuItem("Connection Settings", "")
-		mSettingsLabel.Disable()
+		trayDisable(mSettingsLabel)
 		mAutoConnect := systray.AddMenuItem("", "")
 		mAutoReconnect := systray.AddMenuItem("", "")
 		systray.AddSeparator()
@@ -145,7 +145,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 			if enabled {
 				prefix = "  ✓ "
 			}
-			item.SetTitle(prefix + name)
+			traySetTitle(item, prefix+name)
 		}
 		setSettingTitle(mAutoConnect, "Auto-connect", settings.snapshot().AutoConnect)
 		setSettingTitle(mAutoReconnect, "Auto-reconnect", settings.snapshot().AutoReconnect)
@@ -308,7 +308,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 					settingsRendered = true
 
 					if connected {
-						systray.SetTemplateIcon(iconConn(), iconConn())
+						traySetTemplateIcon(iconConn(), iconConn())
 
 						// Prefer the authoritative state.activeProfile; fall back to
 						// currentProfile (the one we launched, pre-connection). (issue 1)
@@ -329,29 +329,29 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 						tot := fmt.Sprintf(" Total ↑ %s   ↓ %s", humanBytes(float64(in)), humanBytes(float64(out)))
 
 						if status != prevStatus {
-							mStatusLine.SetTitle(status)
+							traySetTitle(mStatusLine, status)
 							prevStatus = status
 						}
 						if session != prevSession {
-							mSession.SetTitle("⏱  " + session)
+							traySetTitle(mSession, "⏱  "+session)
 							prevSession = session
 						}
 						if bw != prevBandwidth {
-							mBandwidth.SetTitle(bw)
+							traySetTitle(mBandwidth, bw)
 							prevBandwidth = bw
 						}
 						if tot != prevTotals {
-							mTotals.SetTitle(tot)
+							traySetTitle(mTotals, tot)
 							prevTotals = tot
 						}
 
 						// Show session rows only on transition. (issue 8)
 						if !prevConnected {
-							mSession.Show()
-							mBandwidth.Show()
-							mTotals.Show()
-							mConnect.Hide()
-							mDisconnect.Show()
+							trayShow(mSession)
+							trayShow(mBandwidth)
+							trayShow(mTotals)
+							trayHide(mConnect)
+							trayShow(mDisconnect)
 						}
 
 						// Checkmarks only on profile change. (issue 8)
@@ -362,23 +362,23 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 									if flag := profileFlagFor(pi.profile); flag != "" {
 										title = "  ✓ " + flag + " " + pi.profile.Name
 									}
-									pi.item.SetTitle(title)
+									traySetTitle(pi.item, title)
 								} else {
 									title := "    " + pi.profile.Name
 									if flag := profileFlagFor(pi.profile); flag != "" {
 										title = "    " + flag + " " + pi.profile.Name
 									}
-									pi.item.SetTitle(title)
+									traySetTitle(pi.item, title)
 								}
 							}
 							prevActiveName = pName
 						}
 					} else {
-						systray.SetTemplateIcon(iconDisc(), iconDisc())
+						traySetTemplateIcon(iconDisc(), iconDisc())
 						if statusValue == statusConnecting || statusValue == statusReconnecting {
-							mDisconnect.Show()
+							trayShow(mDisconnect)
 						} else {
-							mDisconnect.Hide()
+							trayHide(mDisconnect)
 						}
 
 						statusTitle := "⚫  Disconnected"
@@ -391,24 +391,24 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 							statusTitle = "🔴  Operation failed"
 						}
 						if statusTitle != prevStatus {
-							mStatusLine.SetTitle(statusTitle)
+							traySetTitle(mStatusLine, statusTitle)
 							prevStatus = statusTitle
 						}
 
 						// Hide rows only on transition. (issue 8)
 						if prevConnected {
-							mSession.Hide()
-							mBandwidth.Hide()
-							mTotals.Hide()
-							mDisconnect.Hide()
-							mConnect.Show()
-							mReconnect.Show()
+							trayHide(mSession)
+							trayHide(mBandwidth)
+							trayHide(mTotals)
+							trayHide(mDisconnect)
+							trayShow(mConnect)
+							trayShow(mReconnect)
 							for _, pi := range profileItems {
 								title := "    " + pi.profile.Name
 								if flag := profileFlagFor(pi.profile); flag != "" {
 									title = "    " + flag + " " + pi.profile.Name
 								}
-								pi.item.SetTitle(title)
+								traySetTitle(pi.item, title)
 							}
 							prevActiveName = ""
 						}

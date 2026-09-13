@@ -25,9 +25,9 @@ type ServerInfo struct {
 	Server string `json:"server"`
 	// DNSServer is the resolver address observed through the DNS probe, when available.
 	DNSServer string `json:"dns_server,omitempty"`
-	// IPLeak indicates whether an IP leak was detected. It remains false when
-	// the current implementation cannot establish a positive leak result.
-	IPLeak bool `json:"ip_leak"`
+	// IPLeak is nil when leak analysis is unavailable, otherwise it reports the
+	// result of the analysis.
+	IPLeak *bool `json:"ip_leak"`
 	// LeakStatus reports whether leak analysis has produced a result.
 	LeakStatus string `json:"leak_status"`
 }

@@ -141,13 +141,20 @@ xray-cli --tray --daemon-addr 127.0.0.1:19099
 
 **Daemon API** (on `--daemon-addr`):
 - `GET /health` — 200 / 503
-- `GET /status` — JSON: connected, active_profile, bytes_in/out, reconnects
+- `GET /status` — JSON: connected, status, active_profile, bytes_in/out, reconnects
 - `GET /profiles` — available profiles + which is active
 - `GET /ping` — TCP latency + GeoIP country for each profile
 - `GET /server-info` — public IP, exit country, protocol, DNS server, IP leak check
 - `POST /connect` — `{"profile": "name"}` to switch
 - `POST /disconnect` — stop VPN
 - `POST /refresh` — re-fetch subscription profiles
+
+Connection settings are session-only and reset to enabled when the daemon
+starts. Auto-connect controls startup and idle auto-start; disabling it does
+not disconnect an active tunnel. Disconnect cancels pending reconnect attempts,
+and connect, reconnect, disconnect, and profile switching are serialized by
+the daemon controller. Protected mode rejects profile refreshes because its
+PF endpoint allowlist cannot be changed safely during refresh.
 - `GET /settings` — current connection settings and lifecycle status
 - `POST /settings` — update one or both settings, for example `{"auto_reconnect": false}`
 - `POST /reconnect` — stop and restart the currently selected profile

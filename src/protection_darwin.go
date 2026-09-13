@@ -21,6 +21,12 @@ var protection struct {
 	endpoints []string
 }
 
+func protectionActive() bool {
+	protection.Lock()
+	defer protection.Unlock()
+	return protection.active
+}
+
 func pfCommand(input string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

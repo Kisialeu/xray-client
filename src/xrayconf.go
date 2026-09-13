@@ -45,12 +45,8 @@ func buildXrayInstance(link string, socksAddr string, socksPort int, logLevel co
 		if err := json.Unmarshal(*outbound.Settings, &settings); err != nil {
 			return nil, err
 		}
-		for _, field := range []string{"vnext", "servers"} {
-			if entries, ok := settings[field].([]any); ok {
-				for _, entry := range entries {
-					entry.(map[string]any)["address"] = dialIP[0]
-				}
-			}
+		if err := rewriteOutboundDialIP(settings, dialIP[0]); err != nil {
+			return nil, err
 		}
 		raw, err := json.Marshal(settings)
 		if err != nil {
@@ -101,6 +97,21 @@ func buildXrayInstance(link string, socksAddr string, socksPort int, logLevel co
 		port:     port,
 		protocol: proto,
 	}, nil
+}
+
+func rewriteOutboundDialIP(settings map[string]any, dialIP string) error {
+	for _, field := range []string{"vnext", "servers"} {
+		if entries, ok := settings[field].([]any); ok {
+			for _, entry := range entries {
+				object, ok := entry.(map[string]any)
+				if !ok {
+					return fmt.Errorf("outbound %s entry is not an object", field)
+				}
+				object["address"] = dialIP
+			}
+		}
+	}
+	return nil
 }
 
 func buildSocksInbound(addr string, port int) *conf.InboundDetourConfig {
