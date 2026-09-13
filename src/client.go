@@ -8,8 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,8 +17,6 @@ import (
 	"github.com/goxray/core/pipe2socks"
 	"github.com/jackpal/gateway"
 
-	xrayproto "github.com/lilendian0x00/xray-knife/v3/pkg/protocol"
-	"github.com/lilendian0x00/xray-knife/v3/pkg/xray"
 	xapplog "github.com/xtls/xray-core/app/log"
 	xcommlog "github.com/xtls/xray-core/common/log"
 	xcommon "github.com/xtls/xray-core/common"
@@ -83,7 +79,6 @@ type Client struct {
 	state  connState
 
 	xInst   xcommon.Runnable
-	xCfg    *xrayproto.GeneralConfig
 	xSrvIP  *net.IPAddr
 	tunnel  io.ReadWriteCloser
 	metrics atomic.Pointer[readerMetrics] // lock-free read for BytesRead/BytesWritten
@@ -195,11 +190,11 @@ func (c *Client) Connect(link string) error {
 		}
 	}
 
-	xInst, xCfg, xSrvIP, err := c.createXrayProxy(link)
+	xInst, xSrvIP, err := c.createXrayProxy(link)
 	if err != nil {
 		return fmt.Errorf("create xray core instance: %w", err)
 	}
-	c.xInst, c.xCfg, c.xSrvIP = xInst, xCfg, xSrvIP
+	c.xInst, c.xSrvIP = xInst, xSrvIP
 	rollback = append(rollback, func() error { return c.xInst.Close() })
 
 	if err = c.xInst.Start(); err != nil {
@@ -347,40 +342,24 @@ func (c *Client) xrayToGatewayRoute() route.Opts {
 	return route.Opts{Gateway: *c.cfg.GatewayIP, Routes: []*route.Addr{route.MustParseAddr(c.xSrvIP.String() + "/32")}}
 }
 
-func (c *Client) createXrayProxy(link string) (xrayproto.Instance, *xrayproto.GeneralConfig, *net.IPAddr, error) {
-	inbound := &xray.Socks{
-		Remark:  "GoXRay-TUN-Listener",
-		Address: c.cfg.InboundProxy.IP.String(),
-		Port:    strconv.Itoa(c.cfg.InboundProxy.Port),
-	}
-
-	svc := xray.NewXrayService(true,
-		c.cfg.TLSAllowInsecure,
-		xray.WithCustomLogLevel(c.cfg.XRayLogType, xRayLogLevel(c.cfg.Logger.Handler())),
-		xray.WithInbound(inbound),
+func (c *Client) createXrayProxy(link string) (xcommon.Runnable, *net.IPAddr, error) {
+	result, err := buildXrayInstance(
+		link,
+		c.cfg.InboundProxy.IP.String(),
+		c.cfg.InboundProxy.Port,
+		xRayLogLevel(c.cfg.Logger.Handler()),
+		c.cfg.XRayLogType,
 	)
-
-	link = strings.TrimSpace(link)
-	protocol, err := svc.CreateProtocol(link)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("invalid config: protocol create: %w", err)
-	}
-	if err := protocol.Parse(); err != nil {
-		return nil, nil, nil, fmt.Errorf("invalid config: parse: %w", err)
+		return nil, nil, err
 	}
 
-	cfg := protocol.ConvertToGeneralConfig()
-	inst, err := svc.MakeInstance(protocol)
+	ip, err := net.ResolveIPAddr("ip", result.address)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("make instance: %w", err)
+		return nil, nil, fmt.Errorf("xray address not resolvable: %w", err)
 	}
 
-	ip, err := net.ResolveIPAddr("ip", cfg.Address)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("xray address not resolvable: %w", err)
-	}
-
-	return inst, &cfg, ip, nil
+	return result.instance, ip, nil
 }
 
 func xRayLogLevel(h slog.Handler) xcommlog.Severity {

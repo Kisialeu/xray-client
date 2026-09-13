@@ -16,7 +16,12 @@ const subscriptionTimeout = 30 * time.Second
 
 var knownSchemes = []string{"vless://", "vmess://", "trojan://", "ss://", "ssr://"}
 
-func fetchSubscription(logger *slog.Logger, rawURL string) ([]Profile, error) {
+type subscriptionResult struct {
+	profiles []Profile
+	dns      []string
+}
+
+func fetchSubscription(logger *slog.Logger, rawURL string) (*subscriptionResult, error) {
 	logger.Info("fetching subscription", "url", rawURL)
 
 	req, err := http.NewRequest("GET", rawURL, nil)
@@ -45,25 +50,54 @@ func fetchSubscription(logger *slog.Logger, rawURL string) ([]Profile, error) {
 	}
 	logger.Debug("subscription body", "bytes", len(body))
 
-	profiles, err := parseSubscription(logger, string(body))
+	profiles, bodyDNS, err := parseSubscription(logger, string(body))
 	if err != nil {
 		return nil, err
 	}
 
+	dns := parseHeaderDNS(resp.Header.Get("X-DNS"))
+	if len(dns) == 0 {
+		dns = bodyDNS
+	}
+	if len(dns) > 0 {
+		logger.Info("subscription provides DNS", "servers", dns)
+	}
+
 	logger.Info("subscription loaded", "profiles", len(profiles), "elapsed", time.Since(start))
-	return profiles, nil
+	return &subscriptionResult{profiles: profiles, dns: dns}, nil
 }
 
-func parseSubscription(logger *slog.Logger, raw string) ([]Profile, error) {
+func parseHeaderDNS(header string) []string {
+	if header == "" {
+		return nil
+	}
+	var servers []string
+	for _, s := range strings.Split(header, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			servers = append(servers, s)
+		}
+	}
+	return servers
+}
+
+func parseSubscription(logger *slog.Logger, raw string) ([]Profile, []string, error) {
 	decoded, encoding := tryBase64Decode(strings.TrimSpace(raw))
 	logger.Debug("subscription decoded", "encoding", encoding, "decoded_bytes", len(decoded))
 
 	var profiles []Profile
+	var dns []string
 	seen := make(map[string]bool)
 	skipped := 0
 	for _, line := range strings.Split(decoded, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#dns:") {
+			dns = parseHeaderDNS(strings.TrimPrefix(line, "#dns:"))
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
 			continue
 		}
 		if !isProxyLink(line) {
@@ -86,9 +120,9 @@ func parseSubscription(logger *slog.Logger, raw string) ([]Profile, error) {
 	}
 
 	if len(profiles) == 0 {
-		return nil, fmt.Errorf("subscription contains no valid links")
+		return nil, nil, fmt.Errorf("subscription contains no valid links")
 	}
-	return profiles, nil
+	return profiles, dns, nil
 }
 
 func tryBase64Decode(s string) (string, string) {

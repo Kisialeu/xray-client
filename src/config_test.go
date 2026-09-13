@@ -405,7 +405,7 @@ profiles:
     link: "vless://b"
 `
 	f := writeTmp(t, "cfg.yaml", yaml)
-	selected, all, err := loadYAMLAll(f, "", testLogger)
+	selected, all, _, err := loadYAMLAll(f, "", testLogger)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -434,7 +434,7 @@ profiles:
 `, srv.URL)
 	f := writeTmp(t, "cfg.yaml", yaml)
 
-	selected, all, err := loadYAMLAll(f, "", testLogger)
+	selected, all, _, err := loadYAMLAll(f, "", testLogger)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -460,7 +460,7 @@ profiles:
 `, srv.URL)
 	f := writeTmp(t, "cfg.yaml", yaml)
 
-	selected, all, err := loadYAMLAll(f, "", testLogger)
+	selected, all, _, err := loadYAMLAll(f, "", testLogger)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -484,7 +484,7 @@ profiles: []
 `, srv.URL)
 	f := writeTmp(t, "cfg.yaml", yaml)
 
-	_, _, err := loadYAMLAll(f, "", testLogger)
+	_, _, _, err := loadYAMLAll(f, "", testLogger)
 	if err == nil {
 		t.Fatal("expected error when subscription fails and no inline profiles")
 	}
@@ -499,7 +499,7 @@ profiles:
     link: "vless://b"
 `
 	f := writeTmp(t, "cfg.yaml", yaml)
-	selected, _, err := loadYAMLAll(f, "b", testLogger)
+	selected, _, _, err := loadYAMLAll(f, "b", testLogger)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -515,7 +515,7 @@ profiles:
     link: "vless://only"
 `
 	f := writeTmp(t, "cfg.yaml", yaml)
-	_, _, err := loadYAMLAll(f, "missing", testLogger)
+	_, _, _, err := loadYAMLAll(f, "missing", testLogger)
 	if err == nil {
 		t.Fatal("expected error for missing profile")
 	}
@@ -538,7 +538,7 @@ profiles:
 `, srv.URL)
 	f := writeTmp(t, "cfg.yaml", yaml)
 
-	_, all, err := loadYAMLAll(f, "", testLogger)
+	_, all, _, err := loadYAMLAll(f, "", testLogger)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

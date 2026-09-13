@@ -70,18 +70,18 @@ func loadLink(path, profileName, flagLink string) (Profile, error) {
 	}
 }
 
-func loadSubscriptionProfiles(subURL, profileName string, logger *slog.Logger) (Profile, []Profile, error) {
-	profiles, err := fetchSubscription(logger, subURL)
+func loadSubscriptionProfiles(subURL, profileName string, logger *slog.Logger) (Profile, []Profile, []string, error) {
+	result, err := fetchSubscription(logger, subURL)
 	if err != nil {
-		return Profile{}, nil, err
+		return Profile{}, nil, nil, err
 	}
 
-	selected, err := selectProfile(profiles, profileName, "")
+	selected, err := selectProfile(result.profiles, profileName, "")
 	if err != nil {
-		return Profile{}, nil, fmt.Errorf("%w in subscription", err)
+		return Profile{}, nil, nil, fmt.Errorf("%w in subscription", err)
 	}
-	logger.Info("subscription profile selected", "name", selected.Name, "total", len(profiles))
-	return selected, profiles, nil
+	logger.Info("subscription profile selected", "name", selected.Name, "total", len(result.profiles))
+	return selected, result.profiles, result.dns, nil
 }
 
 // loadTXT reads the first non-empty, non-comment line as the connection link.
@@ -119,39 +119,41 @@ func loadYAML(path, profileName string) (Profile, error) {
 // loadYAMLAll parses a YAML config file, fetches the subscription URL if
 // present, merges all profiles, and returns the selected profile along with
 // the full profile list. Subscription is fetched at most once.
-func loadYAMLAll(path, profileName string, logger *slog.Logger) (Profile, []Profile, error) {
+func loadYAMLAll(path, profileName string, logger *slog.Logger) (Profile, []Profile, []string, error) {
 	cfg, err := parseYAMLConfig(path)
 	if err != nil {
-		return Profile{}, nil, err
+		return Profile{}, nil, nil, err
 	}
 
 	profiles := cfg.Profiles
+	var subDNS []string
 	logger.Debug("config loaded", "path", path, "inline_profiles", len(profiles), "has_subscription", cfg.Subscription != "")
 
 	if cfg.Subscription != "" {
-		sub, subErr := fetchSubscription(logger, cfg.Subscription)
+		result, subErr := fetchSubscription(logger, cfg.Subscription)
 		if subErr != nil {
 			if len(profiles) == 0 {
-				return Profile{}, nil, fmt.Errorf("subscription fetch failed and no inline profiles: %w", subErr)
+				return Profile{}, nil, nil, fmt.Errorf("subscription fetch failed and no inline profiles: %w", subErr)
 			}
 			logger.Warn("subscription fetch failed, using inline profiles only", "err", subErr)
 		} else {
 			before := len(profiles)
-			profiles = mergeProfiles(profiles, sub)
-			logger.Info("profiles merged", "inline", before, "subscription", len(sub), "total", len(profiles))
+			profiles = mergeProfiles(profiles, result.profiles)
+			subDNS = result.dns
+			logger.Info("profiles merged", "inline", before, "subscription", len(result.profiles), "total", len(profiles))
 		}
 	}
 
 	if len(profiles) == 0 {
-		return Profile{}, nil, fmt.Errorf("%s: no profiles defined", path)
+		return Profile{}, nil, nil, fmt.Errorf("%s: no profiles defined", path)
 	}
 
 	selected, err := selectProfile(profiles, profileName, cfg.Default)
 	if err != nil {
-		return Profile{}, nil, fmt.Errorf("%w in %s", err, path)
+		return Profile{}, nil, nil, fmt.Errorf("%w in %s", err, path)
 	}
 	logger.Info("profile selected", "name", selected.Name, "total", len(profiles))
-	return selected, profiles, nil
+	return selected, profiles, subDNS, nil
 }
 
 func selectProfile(profiles []Profile, name, defaultName string) (Profile, error) {
@@ -226,11 +228,11 @@ func listProfiles(path string, logger *slog.Logger) error {
 
 	profiles := cfg.Profiles
 	if cfg.Subscription != "" {
-		sub, subErr := fetchSubscription(logger, cfg.Subscription)
+		result, subErr := fetchSubscription(logger, cfg.Subscription)
 		if subErr != nil {
 			logger.Warn("subscription fetch failed", "err", subErr)
 		} else {
-			profiles = mergeProfiles(profiles, sub)
+			profiles = mergeProfiles(profiles, result.profiles)
 		}
 	}
 

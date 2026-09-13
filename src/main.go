@@ -363,12 +363,12 @@ func main() {
 	if *doListProfiles {
 		switch {
 		case *subscribeURL != "":
-			profiles, err := fetchSubscription(logger, *subscribeURL)
+			result, err := fetchSubscription(logger, *subscribeURL)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)
 				os.Exit(1)
 			}
-			for _, p := range profiles {
+			for _, p := range result.profiles {
 				name := p.Name
 				if name == "" {
 					name = "(unnamed)"
@@ -390,11 +390,12 @@ func main() {
 	var (
 		profile     Profile
 		allProfiles []Profile
+		subDNS      []string
 	)
 
 	switch {
 	case *subscribeURL != "":
-		p, all, err := loadSubscriptionProfiles(*subscribeURL, *profileName, logger)
+		p, all, dns, err := loadSubscriptionProfiles(*subscribeURL, *profileName, logger)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, "Run with --help for usage.")
@@ -402,9 +403,10 @@ func main() {
 		}
 		profile = p
 		allProfiles = all
+		subDNS = dns
 
 	case *configPath != "" && isYAML(*configPath):
-		p, all, err := loadYAMLAll(*configPath, *profileName, logger)
+		p, all, dns, err := loadYAMLAll(*configPath, *profileName, logger)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, "Run with --help for usage.")
@@ -412,6 +414,7 @@ func main() {
 		}
 		profile = p
 		allProfiles = all
+		subDNS = dns
 
 	default:
 		p, err := loadLink(*configPath, *profileName, *link)
@@ -430,6 +433,7 @@ func main() {
 		}
 	}
 
+	// DNS priority: --dns flag > dns: in YAML > subscription X-DNS header / #dns: line
 	var dnsServers []string
 	if *dnsFlag != "" {
 		for _, s := range strings.Split(*dnsFlag, ",") {
@@ -442,6 +446,9 @@ func main() {
 		if cfg, err := parseYAMLConfig(*configPath); err == nil && len(cfg.DNS) > 0 {
 			dnsServers = cfg.DNS
 		}
+	}
+	if len(dnsServers) == 0 {
+		dnsServers = subDNS
 	}
 
 	s := &state{link: profile.Link, startAt: time.Now()}
@@ -469,7 +476,7 @@ func main() {
 		case *subscribeURL != "":
 			subURL, profName, insecure := *subscribeURL, *profileName, *tlsInsecure
 			reload = func(l *slog.Logger) ([]Profile, error) {
-				_, all, err := loadSubscriptionProfiles(subURL, profName, l)
+				_, all, _, err := loadSubscriptionProfiles(subURL, profName, l)
 				if err != nil {
 					return nil, err
 				}
@@ -483,7 +490,7 @@ func main() {
 		case *configPath != "" && isYAML(*configPath):
 			cfgPath, profName, insecure := *configPath, *profileName, *tlsInsecure
 			reload = func(l *slog.Logger) ([]Profile, error) {
-				_, all, err := loadYAMLAll(cfgPath, profName, l)
+				_, all, _, err := loadYAMLAll(cfgPath, profName, l)
 				if err != nil {
 					return nil, err
 				}
