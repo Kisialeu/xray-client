@@ -20,7 +20,7 @@ type daemonClient struct {
 func newDaemonClient(addr string) *daemonClient {
 	return &daemonClient{
 		base:   "http://" + addr,
-		client: &http.Client{Timeout: 40 * time.Second},
+		client: &http.Client{Timeout: 40 * time.Second, Transport: controlTransport{controlTokenPath}, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }},
 	}
 }
 
@@ -36,6 +36,7 @@ type daemonStatus struct {
 type daemonProfiles struct {
 	Profiles []struct {
 		Name string `json:"name"`
+		Flag string `json:"flag,omitempty"`
 	} `json:"profiles"`
 	Active string `json:"active"`
 }
@@ -187,6 +188,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 
 		type profileItem struct {
 			name string
+			flag string
 			item *systray.MenuItem
 		}
 		var profileItems []profileItem
@@ -238,10 +240,14 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 					continue
 				}
 				for _, p := range profs.Profiles {
-					item := systray.AddMenuItem("    "+p.Name, p.Name)
-					profileItems = append(profileItems, profileItem{name: p.Name, item: item})
-
 					name := p.Name
+					title := "    " + name
+					if p.Flag != "" {
+						title = "    " + p.Flag + " " + name
+					}
+					item := systray.AddMenuItem(title, name)
+					profileItems = append(profileItems, profileItem{name: name, flag: p.Flag, item: item})
+
 					go func() {
 						for range item.ClickedCh {
 							logger.Info("switching profile", "profile", name)
@@ -299,11 +305,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 					if info.DNSServer != "" {
 						mInfoDNS.SetTitle("    DNS: " + info.DNSServer)
 					}
-					if info.IPLeak {
-						mInfoLeak.SetTitle("    IP Leak: ⚠ DETECTED")
-					} else {
-						mInfoLeak.SetTitle("    IP Leak: ✓ None")
-					}
+					mInfoLeak.SetTitle("    Leak protection: not measured")
 				}
 
 				serverInfoCh := make(chan struct{}, 1)
@@ -366,7 +368,12 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 										continue
 									}
 									item := systray.AddMenuItem("    "+p.Name, p.Name)
-									profileItems = append(profileItems, profileItem{name: p.Name, item: item})
+									title := "    " + p.Name
+									if p.Flag != "" {
+										title = "    " + p.Flag + " " + p.Name
+									}
+									item.SetTitle(title)
+									profileItems = append(profileItems, profileItem{name: p.Name, flag: p.Flag, item: item})
 									name := p.Name
 									go func() {
 										for range item.ClickedCh {
@@ -504,7 +511,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 										if !ok {
 											lat = -1
 										}
-                                        pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
+										pi.item.SetTitle(formatProfileTitle("    ", pi.name, lat, flags[pi.name]))
 
 									}
 									prevActiveName = pName
@@ -549,4 +556,3 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 		}()
 	}
 }
-

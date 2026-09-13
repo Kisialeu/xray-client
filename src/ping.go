@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const pingTimeout = 60 * time.Second
+const pingTimeout = 5 * time.Second
 
 type PingResult struct {
 	Name      string `json:"name"`
@@ -36,14 +36,21 @@ func pingProfiles(profiles []Profile) []PingResult {
 	countries := resolveCountries(nonEmpty)
 
 	var wg sync.WaitGroup
+	limit := make(chan struct{}, 8)
 	for i, p := range profiles {
 		wg.Add(1)
 		go func(idx int, prof Profile) {
 			defer wg.Done()
+			limit <- struct{}{}
+			defer func() { <-limit }()
 			hp := hostports[idx]
 			results[idx] = PingResult{Name: prof.Name, LatencyMs: -1}
 
-			if cc := countries[hp]; cc != "" {
+			cc := countries[hp]
+			if cc == "" {
+				cc = profileCountryCode(prof)
+			}
+			if cc != "" {
 				results[idx].Country = cc
 				results[idx].Flag = countryFlag(cc)
 			}

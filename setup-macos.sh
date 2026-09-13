@@ -72,6 +72,14 @@ do_install() {
     mkdir -p "$CONFIG_DIR"
     cp "$CONFIG_SRC" "$CONFIG_DIR/servers.yaml"
     chmod 600 "$CONFIG_DIR/servers.yaml"
+    chown root:wheel "$CONFIG_DIR/servers.yaml"
+
+    # Only the login user and root may authenticate to the control API.
+    if [ ! -f "$CONFIG_DIR/control.token" ]; then
+        (umask 077; openssl rand -hex 32 > "$CONFIG_DIR/control.token")
+    fi
+    chown "$REAL_USER" "$CONFIG_DIR/control.token"
+    chmod 600 "$CONFIG_DIR/control.token"
 
     echo "==> Writing LaunchDaemon plist (root, headless VPN)"
     cat > "$DAEMON_PLIST" <<PLIST

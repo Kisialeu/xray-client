@@ -11,21 +11,23 @@ import (
 )
 
 type ServerInfo struct {
-	PublicIP  string `json:"public_ip"`
-	Country   string `json:"country"`
-	Flag      string `json:"flag"`
-	Protocol  string `json:"protocol"`
-	Server    string `json:"server"`
-	DNSServer string `json:"dns_server,omitempty"`
-	IPLeak    bool   `json:"ip_leak"`
+	PublicIP   string `json:"public_ip"`
+	Country    string `json:"country"`
+	Flag       string `json:"flag"`
+	Protocol   string `json:"protocol"`
+	Server     string `json:"server"`
+	DNSServer  string `json:"dns_server,omitempty"`
+	IPLeak     bool   `json:"ip_leak"`
+	LeakStatus string `json:"leak_status"`
 }
 
 const publicIPURL = "https://api.ipify.org"
 
 func gatherServerInfo(profile Profile) ServerInfo {
 	info := ServerInfo{
-		Protocol: extractProtocol(profile.Link),
-		Server:   extractHostPort(profile.Link),
+		Protocol:   extractProtocol(profile.Link),
+		Server:     extractHostPort(profile.Link),
+		LeakStatus: "unknown",
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -40,19 +42,8 @@ func gatherServerInfo(profile Profile) ServerInfo {
 	if info.PublicIP != "" {
 		info.Country, info.Flag = geoIPSingle(client, info.PublicIP)
 
-		serverHost, _, _ := net.SplitHostPort(info.Server)
-		if serverHost == "" {
-			serverHost = info.Server
-		}
-		info.IPLeak = true
-		if addrs, err := net.LookupHost(serverHost); err == nil {
-			for _, addr := range addrs {
-				if addr == info.PublicIP {
-					info.IPLeak = false
-					break
-				}
-			}
-		}
+		// An entry IP need not equal egress. A single IPv4 observation
+		// cannot establish DNS or IPv6 leak protection.
 	}
 
 	if addrs, err := net.LookupHost("whoami.akamai.net"); err == nil && len(addrs) > 0 {

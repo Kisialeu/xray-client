@@ -33,7 +33,7 @@ func startTestDaemon(t *testing.T) (addr string, s *state, cancel context.Cancel
 	cancel = c
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	go runDaemon(ctx, logger, s, initial, profiles, 1, addr, nil, nil)
+	go runDaemon(ctx, logger, s, initial, profiles, 1, addr, nil, nil, "test-token")
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -54,7 +54,7 @@ func TestDaemon_Health_Disconnected(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Get("http://" + addr + "/health")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/health")
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestDaemon_Health_Connected(t *testing.T) {
 	defer cancel()
 
 	s.connected.Store(true)
-	resp, err := http.Get("http://" + addr + "/health")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/health")
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestDaemon_Status_JSON(t *testing.T) {
 	p := &Profile{Name: "alpha"}
 	s.activeProfile.Store(p)
 
-	resp, err := http.Get("http://" + addr + "/status")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/status")
 	if err != nil {
 		t.Fatalf("GET /status: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestDaemon_Status_Disconnected(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Get("http://" + addr + "/status")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/status")
 	if err != nil {
 		t.Fatalf("GET /status: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestDaemon_Status_ContentType(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, _ := http.Get("http://" + addr + "/status")
+	resp, _ := daemonTestHTTP.Get("http://" + addr + "/status")
 	defer resp.Body.Close()
 	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
 		t.Errorf("Content-Type = %q", ct)
@@ -153,7 +153,7 @@ func TestDaemon_Profiles(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Get("http://" + addr + "/profiles")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/profiles")
 	if err != nil {
 		t.Fatalf("GET /profiles: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestDaemon_Profiles_ShowsActive(t *testing.T) {
 	p := &Profile{Name: "beta"}
 	s.activeProfile.Store(p)
 
-	resp, _ := http.Get("http://" + addr + "/profiles")
+	resp, _ := daemonTestHTTP.Get("http://" + addr + "/profiles")
 	defer resp.Body.Close()
 
 	var got struct {
@@ -205,7 +205,7 @@ func TestDaemon_Connect_UnknownProfile(t *testing.T) {
 	defer cancel()
 
 	body, _ := json.Marshal(map[string]string{"profile": "nonexistent"})
-	resp, err := http.Post("http://"+addr+"/connect", "application/json", bytes.NewReader(body))
+	resp, err := daemonTestHTTP.Post("http://"+addr+"/connect", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /connect: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestDaemon_Connect_InvalidBody(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Post("http://"+addr+"/connect", "application/json", strings.NewReader("not json"))
+	resp, err := daemonTestHTTP.Post("http://"+addr+"/connect", "application/json", strings.NewReader("not json"))
 	if err != nil {
 		t.Fatalf("POST /connect: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestDaemon_Connect_MethodNotAllowed(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Get("http://" + addr + "/connect")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/connect")
 	if err != nil {
 		t.Fatalf("GET /connect: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestDaemon_Disconnect_MethodNotAllowed(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Get("http://" + addr + "/disconnect")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/disconnect")
 	if err != nil {
 		t.Fatalf("GET /disconnect: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestDaemon_Disconnect_WhenAlreadyStopped(t *testing.T) {
 	// Give daemon time to start and fail (invalid link)
 	time.Sleep(500 * time.Millisecond)
 
-	resp, err := http.Post("http://"+addr+"/disconnect", "application/json", nil)
+	resp, err := daemonTestHTTP.Post("http://"+addr+"/disconnect", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /disconnect: %v", err)
 	}
@@ -313,7 +313,7 @@ func startTestDaemonWithReload(t *testing.T, reload reloadFunc) (addr string, s 
 	cancel = c
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	go runDaemon(ctx, logger, s, initial, profiles, 1, addr, reload, nil)
+	go runDaemon(ctx, logger, s, initial, profiles, 1, addr, reload, nil, "test-token")
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -340,7 +340,7 @@ func TestDaemon_Refresh_AddsProfiles(t *testing.T) {
 	defer cancel()
 
 	// Before refresh: 1 profile
-	resp, _ := http.Get("http://" + addr + "/profiles")
+	resp, _ := daemonTestHTTP.Get("http://" + addr + "/profiles")
 	var before struct {
 		Profiles []struct{ Name string } `json:"profiles"`
 	}
@@ -351,7 +351,7 @@ func TestDaemon_Refresh_AddsProfiles(t *testing.T) {
 	}
 
 	// Refresh
-	resp, err := http.Post("http://"+addr+"/refresh", "application/json", nil)
+	resp, err := daemonTestHTTP.Post("http://"+addr+"/refresh", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /refresh: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestDaemon_Refresh_AddsProfiles(t *testing.T) {
 	}
 
 	// After refresh: 3 profiles
-	resp2, _ := http.Get("http://" + addr + "/profiles")
+	resp2, _ := daemonTestHTTP.Get("http://" + addr + "/profiles")
 	var after struct {
 		Profiles []struct{ Name string } `json:"profiles"`
 	}
@@ -376,7 +376,7 @@ func TestDaemon_Refresh_NoReloadFunc(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Post("http://"+addr+"/refresh", "application/json", nil)
+	resp, err := daemonTestHTTP.Post("http://"+addr+"/refresh", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /refresh: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestDaemon_Refresh_MethodNotAllowed(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Get("http://" + addr + "/refresh")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/refresh")
 	if err != nil {
 		t.Fatalf("GET /refresh: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestWriteJSON(t *testing.T) {
 	defer cancel()
 
 	// /profiles uses writeJSON under the hood via json.Encode
-	resp, _ := http.Get("http://" + addr + "/profiles")
+	resp, _ := daemonTestHTTP.Get("http://" + addr + "/profiles")
 	defer resp.Body.Close()
 
 	ct := resp.Header.Get("Content-Type")

@@ -7,6 +7,6 @@ import (
 	"log/slog"
 )
 
-func runTray(_ context.Context, _ context.CancelFunc, _ *slog.Logger, _ *state, _ Profile, _ []Profile, _ int) {
+func runTray(_ context.Context, _ context.CancelFunc, _ *slog.Logger, _ *state, _ Profile, _ []Profile, _ int, _ []string) {
 	panic("--tray is only supported on macOS")
 }

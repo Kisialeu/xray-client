@@ -18,12 +18,12 @@ import (
 	"github.com/jackpal/gateway"
 
 	xapplog "github.com/xtls/xray-core/app/log"
-	xcommlog "github.com/xtls/xray-core/common/log"
 	xcommon "github.com/xtls/xray-core/common"
+	xcommlog "github.com/xtls/xray-core/common/log"
 )
 
 const (
-	disconnectTimeout  = 30 * time.Second
+	disconnectTimeout   = 30 * time.Second
 	inboundReadyTimeout = 5 * time.Second
 	inboundDialInterval = 20 * time.Millisecond
 )
@@ -67,6 +67,7 @@ func (c *Config) apply(new *Config) {
 	if new.DNSServers != nil {
 		c.DNSServers = new.DNSServers
 	}
+	c.TLSAllowInsecure = new.TLSAllowInsecure
 	if new.XRayLogType != xapplog.LogType_None {
 		c.XRayLogType = new.XRayLogType
 	}
@@ -75,8 +76,8 @@ func (c *Config) apply(new *Config) {
 type Client struct {
 	cfg Config
 
-	mu     sync.Mutex
-	state  connState
+	mu    sync.Mutex
+	state connState
 
 	xInst   xcommon.Runnable
 	xSrvIP  *net.IPAddr
@@ -85,8 +86,8 @@ type Client struct {
 	pipe    pipeIface
 	routes  ipTable
 
-	tunIfaceName  string
-	tunRouteAdded bool
+	tunIfaceName   string
+	tunRouteAdded  bool
 	xrayRouteAdded bool
 	dnsState       *dnsOverride
 
@@ -213,6 +214,13 @@ func (c *Client) Connect(link string) error {
 		return fmt.Errorf("setup TUN device: %w", err)
 	}
 	c.tunIfaceName = ifaceName
+	if err := protectInterface(ifaceName); err != nil {
+		_ = c.routes.Delete(route.Opts{IfName: ifaceName, Routes: c.cfg.RoutesToTUN})
+		_ = tunnel.Close()
+		runRollback()
+		return fmt.Errorf("tunnel firewall: %w", err)
+	}
+	rollback = append(rollback, func() error { return protectInterface("") })
 	c.tunRouteAdded = true
 	rollback = append(rollback, func() error {
 		err := c.routes.Delete(route.Opts{IfName: c.tunIfaceName, Routes: c.cfg.RoutesToTUN})
@@ -234,6 +242,12 @@ func (c *Client) Connect(link string) error {
 
 	if len(c.cfg.DNSServers) > 0 {
 		c.dnsState = overrideDNS(c.cfg.DNSServers, c.cfg.Logger)
+		if c.dnsState == nil {
+			_ = c.routes.Delete(gwRoute)
+			c.xrayRouteAdded = false
+			runRollback()
+			return fmt.Errorf("DNS protection could not be configured")
+		}
 		rollback = append(rollback, func() error { c.dnsState.restore(c.cfg.Logger); return nil })
 	}
 
@@ -243,9 +257,11 @@ func (c *Client) Connect(link string) error {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
+	stopped := c.tunnelStopped
 	go func() {
+		defer close(stopped)
 		wg.Done()
-		c.tunnelStopped <- c.pipe.Copy(ctx, c.tunnel, c.cfg.InboundProxy.String())
+		stopped <- c.pipe.Copy(ctx, m, c.cfg.InboundProxy.String())
 	}()
 	wg.Wait()
 
@@ -289,10 +305,14 @@ func (c *Client) Disconnect(ctx context.Context) error {
 	c.mu.Unlock()
 
 	// Slow path — no lock held.
+	protectionErr := protectInterface("")
 	dnsState.restore(c.cfg.Logger)
 	stopFn()
 
 	var errs []error
+	if protectionErr != nil {
+		errs = append(errs, protectionErr)
+	}
 	if err := tunnel.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close tunnel: %w", err))
 	}
@@ -343,20 +363,27 @@ func (c *Client) xrayToGatewayRoute() route.Opts {
 }
 
 func (c *Client) createXrayProxy(link string) (xcommon.Runnable, *net.IPAddr, error) {
+	if c.cfg.TLSAllowInsecure {
+		return nil, nil, fmt.Errorf("insecure TLS is not supported; use a trusted certificate")
+	}
+	_, address, _, _, err := buildOutbound(link)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid proxy profile")
+	}
+	ip, err := resolveEndpoint(address)
+	if err != nil {
+		return nil, nil, err
+	}
 	result, err := buildXrayInstance(
 		link,
 		c.cfg.InboundProxy.IP.String(),
 		c.cfg.InboundProxy.Port,
 		xRayLogLevel(c.cfg.Logger.Handler()),
 		c.cfg.XRayLogType,
+		ip.String(),
 	)
 	if err != nil {
 		return nil, nil, err
-	}
-
-	ip, err := net.ResolveIPAddr("ip", result.address)
-	if err != nil {
-		return nil, nil, fmt.Errorf("xray address not resolvable: %w", err)
 	}
 
 	return result.instance, ip, nil
@@ -425,4 +452,3 @@ func getFreePortSafe() (int, error) {
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
-

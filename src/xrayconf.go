@@ -30,12 +30,34 @@ type xrayResult struct {
 	protocol string
 }
 
-func buildXrayInstance(link string, socksAddr string, socksPort int, logLevel commlog.Severity, logType applog.LogType) (*xrayResult, error) {
+func buildXrayInstance(link string, socksAddr string, socksPort int, logLevel commlog.Severity, logType applog.LogType, dialIP ...string) (*xrayResult, error) {
 	link = strings.TrimSpace(link)
 
 	outbound, address, port, proto, err := buildOutbound(link)
 	if err != nil {
 		return nil, fmt.Errorf("build outbound: %w", err)
+	}
+	if len(dialIP) > 0 {
+		var settings map[string]any
+		if err := json.Unmarshal(*outbound.Settings, &settings); err != nil {
+			return nil, err
+		}
+		for _, field := range []string{"vnext", "servers"} {
+			if entries, ok := settings[field].([]any); ok {
+				for _, entry := range entries {
+					entry.(map[string]any)["address"] = dialIP[0]
+				}
+			}
+		}
+		raw, err := json.Marshal(settings)
+		if err != nil {
+			return nil, err
+		}
+		settingsJSON := json.RawMessage(raw)
+		outbound.Settings = &settingsJSON
+		if outbound.StreamSetting != nil && outbound.StreamSetting.TLSSettings != nil && outbound.StreamSetting.TLSSettings.ServerName == "" {
+			outbound.StreamSetting.TLSSettings.ServerName = address
+		}
 	}
 
 	obBuilt, err := outbound.Build()
@@ -109,7 +131,7 @@ func buildOutbound(link string) (*conf.OutboundDetourConfig, string, string, str
 	case strings.HasPrefix(lower, "ss://"):
 		return buildSSOutbound(link)
 	default:
-		return nil, "", "", "", fmt.Errorf("unsupported protocol: %s", link[:min(20, len(link))])
+		return nil, "", "", "", fmt.Errorf("unsupported proxy protocol")
 	}
 }
 
@@ -122,6 +144,9 @@ func buildVLESSOutbound(link string) (*conf.OutboundDetourConfig, string, string
 
 	address := u.Hostname()
 	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
 	uuid := u.User.Username()
 	flow := q.Get("flow")
 	security := q.Get("security")
@@ -199,9 +224,7 @@ func buildVLESSOutbound(link string) (*conf.OutboundDetourConfig, string, string
 	}
 
 	out.StreamSetting = s
-	oset := json.RawMessage(fmt.Sprintf(`{
-		"vnext":[{"address":"%s","port":%s,"users":[{"id":"%s","alterId":0,"security":"auto","flow":"%s","encryption":"none"}]}]
-	}`, address, port, uuid, flow))
+	oset := outboundJSON("vnext", address, port, map[string]any{"users": []any{map[string]any{"id": uuid, "flow": flow, "encryption": "none"}}})
 	out.Settings = &oset
 
 	return out, address, port, "VLESS", nil
@@ -284,9 +307,8 @@ func buildVMessOutbound(link string) (*conf.OutboundDetourConfig, string, string
 	}
 
 	out.StreamSetting = s
-	oset := json.RawMessage(fmt.Sprintf(`{
-		"vnext":[{"address":"%s","port":%s,"users":[{"id":"%s","alterId":%s,"security":"auto"}]}]
-	}`, address, port, id, aid))
+	alterID, _ := strconv.Atoi(aid)
+	oset := outboundJSON("vnext", address, port, map[string]any{"users": []any{map[string]any{"id": id, "alterId": alterID, "security": "auto"}}})
 	out.Settings = &oset
 
 	return out, address, port, "VMess", nil
@@ -365,9 +387,7 @@ func buildTrojanOutbound(link string) (*conf.OutboundDetourConfig, string, strin
 	}
 
 	out.StreamSetting = s
-	oset := json.RawMessage(fmt.Sprintf(`{
-		"servers":[{"address":"%s","port":%s,"password":"%s"}]
-	}`, address, port, password))
+	oset := outboundJSON("servers", address, port, map[string]any{"password": password})
 	out.Settings = &oset
 
 	return out, address, port, "Trojan", nil
@@ -427,12 +447,20 @@ func buildSSOutbound(link string) (*conf.OutboundDetourConfig, string, string, s
 	p := conf.TransportProtocol("tcp")
 	out.StreamSetting = &conf.StreamConfig{Network: &p}
 
-	oset := json.RawMessage(fmt.Sprintf(`{
-		"servers":[{"address":"%s","port":%s,"method":"%s","password":"%s"}]
-	}`, address, port, method, password))
+	oset := outboundJSON("servers", address, port, map[string]any{"method": method, "password": password})
 	out.Settings = &oset
 
 	return out, address, port, "Shadowsocks", nil
+}
+
+func outboundJSON(field, address, port string, fields map[string]any) json.RawMessage {
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return json.RawMessage(`null`)
+	}
+	fields["address"], fields["port"] = address, p
+	raw, _ := json.Marshal(map[string]any{field: []any{fields}})
+	return raw
 }
 
 func tryB64Decode(s string) ([]byte, error) {

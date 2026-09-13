@@ -55,3 +55,20 @@ func TestPingResult_HasCountryFields(t *testing.T) {
 		t.Errorf("flag = %q", r.Flag)
 	}
 }
+
+func TestProfileCountryCode_LocalMetadata(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"Germany Frankfurt", "DE"},
+		{"Swiss Zurich", "CH"},
+		{"Astana", "KZ"},
+		{"unknown", ""},
+	}
+	for _, tt := range tests {
+		if got := profileCountryCode(Profile{Name: tt.name, Link: "vless://user@example.invalid:443"}); got != tt.want {
+			t.Errorf("profileCountryCode(%q) = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
