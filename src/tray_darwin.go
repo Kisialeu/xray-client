@@ -84,14 +84,43 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 			item    *systray.MenuItem
 		}
 		var profileItems []profileItem
+		var profileCountryFlags atomic.Value
+		profileCountryFlags.Store(map[string]string{})
+		profileFlagFor := func(p Profile) string {
+			if flags, ok := profileCountryFlags.Load().(map[string]string); ok {
+				if country := flags[p.Name]; country != "" {
+					return countryFlag(country)
+				}
+			}
+			return profileFlag(p)
+		}
 		for _, p := range profiles {
 			title := "    " + p.Name
-			if flag := profileFlag(p); flag != "" {
+			if flag := profileFlagFor(p); flag != "" {
 				title = "    " + flag + " " + p.Name
 			}
 			item := systray.AddMenuItem(title, p.Name)
 			profileItems = append(profileItems, profileItem{p, item})
 		}
+
+		// Resolve actual endpoint countries without delaying tray startup.
+		go func() {
+			results := pingProfiles(profiles)
+			flags := make(map[string]string)
+			for _, result := range results {
+				if result.Country != "" {
+					flags[result.Name] = result.Country
+				}
+			}
+			profileCountryFlags.Store(flags)
+			for _, pi := range profileItems {
+				title := "    " + pi.profile.Name
+				if flag := profileFlagFor(pi.profile); flag != "" {
+					title = "    " + flag + " " + pi.profile.Name
+				}
+				pi.item.SetTitle(title)
+			}
+		}()
 		systray.AddSeparator()
 
 		// ── actions ───────────────────────────────────────────────────────
@@ -330,13 +359,13 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 							for _, pi := range profileItems {
 								if pi.profile.Name == pName {
 									title := "  ✓ " + pi.profile.Name
-									if flag := profileFlag(pi.profile); flag != "" {
+									if flag := profileFlagFor(pi.profile); flag != "" {
 										title = "  ✓ " + flag + " " + pi.profile.Name
 									}
 									pi.item.SetTitle(title)
 								} else {
 									title := "    " + pi.profile.Name
-									if flag := profileFlag(pi.profile); flag != "" {
+									if flag := profileFlagFor(pi.profile); flag != "" {
 										title = "    " + flag + " " + pi.profile.Name
 									}
 									pi.item.SetTitle(title)
@@ -376,7 +405,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 							mReconnect.Show()
 							for _, pi := range profileItems {
 								title := "    " + pi.profile.Name
-								if flag := profileFlag(pi.profile); flag != "" {
+								if flag := profileFlagFor(pi.profile); flag != "" {
 									title = "    " + flag + " " + pi.profile.Name
 								}
 								pi.item.SetTitle(title)
