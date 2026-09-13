@@ -82,6 +82,9 @@ func getDNSServers(service string) ([]string, error) {
 	return servers, nil
 }
 
+// overrideDNS changes the active macOS network service and records the prior
+// resolver configuration in a private journal so an interrupted process can
+// restore it on the next startup.
 func overrideDNS(servers []string, logger *slog.Logger) *dnsOverride {
 	if len(servers) == 0 {
 		return nil

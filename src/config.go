@@ -12,9 +12,12 @@ import (
 
 // Profile is a named connection entry from a YAML config file.
 type Profile struct {
-	Name        string `yaml:"name"`
-	Link        string `yaml:"link"`
-	TLSInsecure bool   `yaml:"tls_insecure"`
+	// Name identifies the profile in CLI and daemon commands.
+	Name string `yaml:"name"`
+	// Link is the VLESS, VMess, Trojan, or Shadowsocks connection URI.
+	Link string `yaml:"link"`
+	// TLSInsecure requests insecure TLS handling; validation rejects this mode.
+	TLSInsecure bool `yaml:"tls_insecure"`
 }
 
 // configFile is the YAML schema.

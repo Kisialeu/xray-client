@@ -30,6 +30,9 @@ type xrayResult struct {
 	protocol string
 }
 
+// buildXrayInstance creates an Xray core instance with a local SOCKS inbound
+// and a protocol-specific outbound. When dialIP is supplied, the outbound
+// connects to that resolved address while preserving the hostname for TLS SNI.
 func buildXrayInstance(link string, socksAddr string, socksPort int, logLevel commlog.Severity, logType applog.LogType, dialIP ...string) (*xrayResult, error) {
 	link = strings.TrimSpace(link)
 

@@ -12,11 +12,17 @@ import (
 
 const pingTimeout = 5 * time.Second
 
+// PingResult is the TCP reachability and GeoIP result for one profile. A
+// LatencyMs value of -1 means the endpoint could not be parsed or reached.
 type PingResult struct {
-	Name      string `json:"name"`
-	LatencyMs int    `json:"latency_ms"`
-	Country   string `json:"country,omitempty"`
-	Flag      string `json:"flag,omitempty"`
+	// Name is the profile name.
+	Name string `json:"name"`
+	// LatencyMs is the TCP connection latency in milliseconds, or -1 on failure.
+	LatencyMs int `json:"latency_ms"`
+	// Country is the two-letter country code inferred for the endpoint.
+	Country string `json:"country,omitempty"`
+	// Flag is the Unicode regional-indicator flag for Country.
+	Flag string `json:"flag,omitempty"`
 }
 
 func pingProfiles(profiles []Profile) []PingResult {

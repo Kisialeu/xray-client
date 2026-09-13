@@ -10,14 +10,25 @@ import (
 	"time"
 )
 
+// ServerInfo describes the currently selected proxy profile and the public
+// network identity observed while collecting server information.
 type ServerInfo struct {
-	PublicIP   string `json:"public_ip"`
-	Country    string `json:"country"`
-	Flag       string `json:"flag"`
-	Protocol   string `json:"protocol"`
-	Server     string `json:"server"`
-	DNSServer  string `json:"dns_server,omitempty"`
-	IPLeak     bool   `json:"ip_leak"`
+	// PublicIP is the address returned by the public-IP service.
+	PublicIP string `json:"public_ip"`
+	// Country is the country code associated with PublicIP.
+	Country string `json:"country"`
+	// Flag is the Unicode regional-indicator flag for Country.
+	Flag string `json:"flag"`
+	// Protocol is the normalized proxy protocol name.
+	Protocol string `json:"protocol"`
+	// Server is the configured proxy host and port.
+	Server string `json:"server"`
+	// DNSServer is the resolver address observed through the DNS probe, when available.
+	DNSServer string `json:"dns_server,omitempty"`
+	// IPLeak indicates whether an IP leak was detected. It remains false when
+	// the current implementation cannot establish a positive leak result.
+	IPLeak bool `json:"ip_leak"`
+	// LeakStatus reports whether leak analysis has produced a result.
 	LeakStatus string `json:"leak_status"`
 }
 

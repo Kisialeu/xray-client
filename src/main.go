@@ -1,3 +1,5 @@
+// Package main implements the macOS xray-cli VPN client and its optional
+// daemon and menu-bar control surfaces.
 package main
 
 import (
@@ -128,8 +130,13 @@ func humanBytes(n float64) string {
 // ── reconnect loop ────────────────────────────────────────────────────────────
 
 // runWithReconnect connects profile and keeps it connected, retrying with
-// exponential backoff on failure, until ctx is cancelled or maxAttempts
-// consecutive failures are reached.
+// runWithReconnect owns the active Client for one profile and recreates it
+// after failed or unexpectedly terminated sessions. Recreating the Client is
+// intentional: gateway discovery, the local pipe, and all partial connection
+// resources must be renewed after a failed attempt.
+//
+// The retry loop uses exponential backoff on failure, until ctx is cancelled
+// or maxAttempts consecutive failures are reached.
 func runWithReconnect(
 	ctx context.Context,
 	logger *slog.Logger,
@@ -279,10 +286,10 @@ FLAGS
                       GET /status  → JSON metrics
   --verbose         Log bandwidth stats every 10 s
   --log     <lvl>   Log level: debug|info|warn|error  (default: info)
-  --tray            macOS menu bar mode (default: on for darwin, off elsewhere)
+  --tray            macOS menu bar mode (default: on)
   --dns     <list>  Override DNS on connect (comma-separated, e.g. 1.1.1.1,8.8.8.8)
                       Routes DNS queries through the VPN tunnel. Restored on disconnect.
-  --tls-insecure    Allow self-signed TLS certificates
+  --tls-insecure    Request insecure TLS (rejected; trusted certificates required)
   --max-reconnects  Max reconnect attempts, 0 = unlimited (default: 0)
   --help            Show this help
 

@@ -3,7 +3,7 @@
 XRay VPN client in Go.
 
 **Features:**
-- Auto-reconnect with exponential backoff (2 s → 60 s, capped, configurable attempt limit)
+- Auto-reconnect with exponential backoff (2 s → 15 s, capped, configurable attempt limit)
 - Subscription URL support — fetch profiles from a remote base64-encoded subscription endpoint (compatible with v2rayNG, Shadowrocket, etc.)
 - Multi-profile config support (`.yaml` with named profiles, subscription URL, or a plain `.txt` link file)
 - macOS menu bar app (`--tray`) — country flag icon, live bandwidth, profile switching, server ping latency
@@ -23,16 +23,19 @@ XRay VPN client in Go.
 Go source lives in `./src`. Run `build.sh` from the repo root.
 
 ```bash
-./build.sh                  # native: current OS + arch, CGO enabled
-./build.sh --arch arm64     # native OS, arm64
-./build.sh --arch amd64     # native OS, amd64
+./build.sh                  # macOS, current arch, CGO enabled
+./build.sh --arch arm64     # macOS, arm64
+./build.sh --arch amd64     # macOS, amd64
 ```
 
-Output: `./dist/<os>/xray-cli-<arch>`
+Output: `./dist/darwin/xray-cli-<arch>`
 
-Requires Go 1.26+. `--tray` requires macOS with `CGO_ENABLED=1` (the default for native builds).
+Requires macOS and Go 1.26+. `--tray` requires `CGO_ENABLED=1` (the default for these builds).
 
 > `sudo` is required at **runtime** to create a TUN device.
+
+The repository is macOS-only. The supported targets are `darwin/arm64` and
+`darwin/amd64`; non-Darwin builds are intentionally not provided.
 
 ---
 
@@ -52,8 +55,8 @@ Requires Go 1.26+. `--tray` requires macOS with `CGO_ENABLED=1` (the default for
 | `--status` | `""` | HTTP status server bind address, e.g. `127.0.0.1:9999` |
 | `--verbose` | `false` | Log bandwidth stats every 10 s |
 | `--log` | `info` | Log level: `debug` / `info` / `warn` / `error` |
-| `--tray` | on for darwin | macOS menu bar app |
-| `--tls-insecure` | `false` | Allow self-signed TLS certificates |
+| `--tray` | on | macOS menu bar app |
+| `--tls-insecure` | `false` | Rejected; trusted TLS certificates are required |
 | `--max-reconnects` | `0` | Max reconnect attempts (0 = unlimited) |
 
 ### Direct link
@@ -75,7 +78,7 @@ profiles:
     link: "vless://..."
   - name: work
     link: "vmess://..."
-    tls_insecure: true
+    tls_insecure: false
 ```
 ```bash
 sudo ./xray-cli --config servers.yaml --profile work
@@ -175,3 +178,38 @@ ps aux | grep xray-cli            # find and kill any stale instances
 sudo route delete 0.0.0.0/1
 sudo route delete 128.0.0.0/1
 ```
+
+## Development
+
+The Go package is in `src/`, and the repository uses a `main` package rather
+than a separate library module. Run focused tests from the repository root:
+
+```bash
+GOCACHE=/private/tmp/xray-client-go-cache go test ./src
+```
+
+Build verification does not require a live VPN session:
+
+```bash
+./build.sh --help
+go build -o /private/tmp/xray-client-build-check ./src
+git diff --check
+```
+
+The test suite covers configuration precedence, subscription parsing and
+caching, daemon HTTP behavior, reconnect handling, endpoint validation, and
+traffic metrics. Tests that exercise a live TUN device or macOS services
+require the corresponding runtime privileges and environment.
+
+## Environment variables
+
+- `XRAY_LINK` supplies a connection link when `--link` is not provided.
+- `XRAY_DEBUG_PPROF=1` enables the loopback-only pprof server for diagnostics.
+- `XRAY_DEBUG_PPROF_ADDR` overrides its loopback listen address; the server
+  rejects non-loopback addresses.
+
+## Documentation
+
+- [Architecture](docs/architecture.md) - component responsibilities and data flow.
+- [API reference](docs/API_REFERENCE.md) - daemon HTTP endpoints and JSON formats.
+- [Tunnel lifecycle](tunnel.md) - connection setup, teardown, and cleanup invariants.
