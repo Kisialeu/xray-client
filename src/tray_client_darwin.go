@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -49,6 +50,42 @@ type daemonProfiles struct {
 		Flag string `json:"flag,omitempty"`
 	} `json:"profiles"`
 	Active string `json:"active"`
+}
+
+// daemonSettingsUpdater serializes tray setting toggles so each toggle reads
+// the result of the previous daemon update.
+type daemonSettingsUpdater struct {
+	mu      sync.Mutex
+	current *atomic.Value
+	update  func(connectionSettingsPatch) (ConnectionSettings, error)
+}
+
+func (u *daemonSettingsUpdater) toggleAutoConnect() error {
+	return u.toggle(func(settings ConnectionSettings) bool { return !settings.AutoConnect }, func(patch *connectionSettingsPatch, value bool) {
+		patch.AutoConnect = &value
+	})
+}
+
+func (u *daemonSettingsUpdater) toggleAutoReconnect() error {
+	return u.toggle(func(settings ConnectionSettings) bool { return !settings.AutoReconnect }, func(patch *connectionSettingsPatch, value bool) {
+		patch.AutoReconnect = &value
+	})
+}
+
+func (u *daemonSettingsUpdater) toggle(value func(ConnectionSettings) bool, set func(*connectionSettingsPatch, bool)) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	current := u.current.Load().(ConnectionSettings)
+	next := value(current)
+	var patch connectionSettingsPatch
+	set(&patch, next)
+	updated, err := u.update(patch)
+	if err != nil {
+		return err
+	}
+	u.current.Store(updated)
+	return nil
 }
 
 func (dc *daemonClient) request(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
@@ -280,6 +317,16 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 		selectedProfile.Store("")
 		var currentSettings atomic.Value
 		currentSettings.Store(defaultConnectionSettings())
+		settingsUpdater := &daemonSettingsUpdater{
+			current: &currentSettings,
+			update: func(patch connectionSettingsPatch) (ConnectionSettings, error) {
+				updated, err := dc.updateSettings(ctx, patch)
+				if err != nil {
+					return ConnectionSettings{}, err
+				}
+				return ConnectionSettings{AutoConnect: updated.AutoConnect, AutoReconnect: updated.AutoReconnect}, nil
+			},
+		}
 
 		formatProfileTitle := func(prefix, name string, latencyMs int, flag string) string {
 			if flag != "" {
@@ -450,26 +497,16 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 								}
 							}()
 						case <-mAutoConnect.ClickedCh:
-							current := currentSettings.Load().(ConnectionSettings)
-							value := !current.AutoConnect
 							go func() {
-								updated, err := dc.updateSettings(ctx, connectionSettingsPatch{AutoConnect: &value})
-								if err != nil {
+								if err := settingsUpdater.toggleAutoConnect(); err != nil {
 									logger.Error("update auto-connect failed", "err", err)
-									return
 								}
-								currentSettings.Store(ConnectionSettings{AutoConnect: updated.AutoConnect, AutoReconnect: updated.AutoReconnect})
 							}()
 						case <-mAutoReconnect.ClickedCh:
-							current := currentSettings.Load().(ConnectionSettings)
-							value := !current.AutoReconnect
 							go func() {
-								updated, err := dc.updateSettings(ctx, connectionSettingsPatch{AutoReconnect: &value})
-								if err != nil {
+								if err := settingsUpdater.toggleAutoReconnect(); err != nil {
 									logger.Error("update auto-reconnect failed", "err", err)
-									return
 								}
-								currentSettings.Store(ConnectionSettings{AutoConnect: updated.AutoConnect, AutoReconnect: updated.AutoReconnect})
 							}()
 						case <-mDisconnect.ClickedCh:
 							go func() {

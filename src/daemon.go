@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -176,6 +177,11 @@ func runDaemon(
 			decoder := json.NewDecoder(r.Body)
 			decoder.DisallowUnknownFields()
 			if err := decoder.Decode(&patch); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid settings body"})
+				return
+			}
+			var trailing any
+			if err := decoder.Decode(&trailing); err != io.EOF {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid settings body"})
 				return
 			}

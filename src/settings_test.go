@@ -7,9 +7,32 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestDaemonSettingsUpdaterSerializesRapidToggles(t *testing.T) {
+	var current atomic.Value
+	current.Store(defaultConnectionSettings())
+	settings := newConnectionSettingsState(defaultConnectionSettings())
+	updater := &daemonSettingsUpdater{
+		current: &current,
+		update:  settings.update,
+	}
+
+	done := make(chan error, 2)
+	go func() { done <- updater.toggleAutoReconnect() }()
+	go func() { done <- updater.toggleAutoReconnect() }()
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := current.Load().(ConnectionSettings); got != defaultConnectionSettings() {
+		t.Fatalf("two consecutive toggles = %+v, want defaults restored", got)
+	}
+}
 
 func TestDefaultConnectionSettings(t *testing.T) {
 	got := defaultConnectionSettings()
@@ -128,6 +151,15 @@ func TestDaemonSettingsAndReconnectAPI(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty settings patch status=%d, want 400", resp.StatusCode)
+	}
+
+	resp, err = daemonTestHTTP.Post("http://"+addr+"/settings", "application/json", bytes.NewBufferString(`{"auto_connect":false}{"auto_reconnect":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("trailing settings JSON status=%d, want 400", resp.StatusCode)
 	}
 
 	resp, err = daemonTestHTTP.Do(mustSettingsRequest(t, http.MethodPut, addr, `{"auto_connect":false}`))
