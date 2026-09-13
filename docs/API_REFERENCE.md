@@ -40,6 +40,9 @@ the daemon process starts. Enabling `auto_connect` while the daemon is idle
 starts the selected profile; changing it while connected does not interrupt the
 current tunnel.
 
+`POST /connect` also rejects empty bodies, unknown fields, and trailing JSON
+values with `400 Bad Request`.
+
 The `status` field is one of `disconnected`, `connecting`, `reconnecting`,
 `connected`, or `operation_failed`. `POST /reconnect` and `POST /connect` are
 serialized with `POST /disconnect`; a new tunnel is not started until the

@@ -174,14 +174,7 @@ func runDaemon(
 			})
 		case http.MethodPost:
 			var patch connectionSettingsPatch
-			decoder := json.NewDecoder(r.Body)
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&patch); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid settings body"})
-				return
-			}
-			var trailing any
-			if err := decoder.Decode(&trailing); err != io.EOF {
+			if err := decodeJSONBody(r.Body, &patch); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid settings body"})
 				return
 			}
@@ -239,7 +232,7 @@ func runDaemon(
 		var req struct {
 			Profile string `json:"profile"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBody(r.Body, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request body"})
 			return
 		}
@@ -399,4 +392,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func decodeJSONBody(r io.Reader, dst any) error {
+	decoder := json.NewDecoder(r)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }

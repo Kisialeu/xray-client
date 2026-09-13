@@ -240,6 +240,25 @@ func TestDaemon_Connect_InvalidBody(t *testing.T) {
 	}
 }
 
+func TestDaemon_Connect_RejectsUnknownAndTrailingJSON(t *testing.T) {
+	addr, _, cancel := startTestDaemon(t)
+	defer cancel()
+
+	for _, body := range []string{
+		`{"profile":"alpha","unexpected":true}`,
+		`{"profile":"alpha"}{"profile":"beta"}`,
+	} {
+		resp, err := daemonTestHTTP.Post("http://"+addr+"/connect", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /connect: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("body %q: status = %d, want 400", body, resp.StatusCode)
+		}
+	}
+}
+
 func TestDaemon_Connect_MethodNotAllowed(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()

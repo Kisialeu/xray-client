@@ -343,6 +343,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 		selectedProfile.Store("")
 		var currentSettings atomic.Value
 		currentSettings.Store(defaultConnectionSettings())
+		var refreshMu sync.Mutex
 		settingsUpdater := &daemonSettingsUpdater{
 			current: &currentSettings,
 			update: func(patch connectionSettingsPatch) (ConnectionSettings, error) {
@@ -397,7 +398,13 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 				profs, err := dc.profiles(ctx)
 				if err != nil {
 					logger.Debug("waiting for daemon", "err", err)
-					time.Sleep(2 * time.Second)
+					timer := time.NewTimer(2 * time.Second)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
 					continue
 				}
 				for _, p := range profs.Profiles {
@@ -542,6 +549,8 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 							}()
 						case <-mRefresh.ClickedCh:
 							go func() {
+								refreshMu.Lock()
+								defer refreshMu.Unlock()
 								if err := dc.refresh(ctx); err != nil {
 									logger.Error("refresh failed", "err", err)
 									return

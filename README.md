@@ -141,7 +141,7 @@ xray-cli --tray --daemon-addr 127.0.0.1:19099
 
 **Daemon API** (on `--daemon-addr`):
 - `GET /health` — 200 / 503
-- `GET /status` — JSON: connected, active_profile, bytes_in/out, reconnects
+- `GET /status` — JSON: connected, status, active_profile, bytes_in/out, reconnects
 - `GET /profiles` — available profiles + which is active
 - `GET /ping` — TCP latency + GeoIP country for each profile
 - `GET /server-info` — public IP, exit country, protocol, DNS server, IP leak check
