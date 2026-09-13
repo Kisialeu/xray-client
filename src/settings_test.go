@@ -38,6 +38,21 @@ func TestTrayClientProfileStateConcurrentRefreshAndPing(t *testing.T) {
 	}
 }
 
+func TestTrayClientProfileStateUsesPingFlagInSnapshot(t *testing.T) {
+	state := newTrayClientProfileState()
+	state.add(trayClientProfileItem{name: "profile", flag: "🇫🇮"})
+	state.updatePing([]PingResult{{Name: "profile", Flag: "🇩🇪"}})
+
+	items := state.snapshot()
+	got := ""
+	if len(items) == 1 {
+		got = items[0].flag
+	}
+	if got != "🇩🇪" {
+		t.Fatalf("snapshot flag = %q, want %q", got, "🇩🇪")
+	}
+}
+
 func TestDaemonSettingsUpdaterSerializesRapidToggles(t *testing.T) {
 	var current atomic.Value
 	current.Store(defaultConnectionSettings())

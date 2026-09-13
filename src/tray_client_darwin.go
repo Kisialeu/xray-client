@@ -131,6 +131,9 @@ func (s *trayClientProfileState) snapshotLocked() []trayClientProfileItem {
 			items[i].latency = latency
 			items[i].latencyKnown = true
 		}
+		if flag := s.flags[items[i].name]; flag != "" {
+			items[i].flag = flag
+		}
 	}
 	return items
 }
