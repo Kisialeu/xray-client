@@ -1,18 +1,36 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 const subscriptionTimeout = 30 * time.Second
+
+var subscriptionCacheDir string
+
+func subscriptionURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.User != nil {
+		return nil, fmt.Errorf("invalid subscription URL")
+	}
+	local := net.ParseIP(u.Hostname())
+	if u.Scheme != "https" && !(u.Scheme == "http" && local != nil && local.IsLoopback()) {
+		return nil, fmt.Errorf("subscription requires HTTPS (HTTP allowed only for loopback)")
+	}
+	return u, nil
+}
 
 var knownSchemes = []string{"vless://", "vmess://", "trojan://", "ss://", "ssr://"}
 
@@ -22,19 +40,70 @@ type subscriptionResult struct {
 }
 
 func fetchSubscription(logger *slog.Logger, rawURL string) (*subscriptionResult, error) {
-	logger.Info("fetching subscription", "url", rawURL)
-
-	req, err := http.NewRequest("GET", rawURL, nil)
+	u, err := subscriptionURL(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid subscription URL: %w", err)
+		return nil, err
+	}
+	result, err := fetchSubscriptionRemote(logger, u)
+	if subscriptionCacheDir == "" {
+		return result, err
+	}
+	if err == nil {
+		err = validateProfiles(result.profiles)
+	}
+	key := fmt.Sprintf("%x.json", sha256.Sum256([]byte(rawURL)))
+	path := filepath.Join(subscriptionCacheDir, key)
+	type cached struct {
+		Profiles []Profile
+		DNS      []string
+	}
+	if err != nil {
+		fi, statErr := os.Lstat(path)
+		if statErr == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0077 == 0 && time.Since(fi.ModTime()) < 7*24*time.Hour {
+			data, readErr := os.ReadFile(path)
+			var old cached
+			if readErr == nil && json.Unmarshal(data, &old) == nil && validateProfiles(old.Profiles) == nil {
+				logger.Warn("subscription unavailable; using private cached profiles (maximum age 7 days)")
+				return &subscriptionResult{profiles: old.Profiles, dns: old.DNS}, nil
+			}
+		}
+		return nil, err
+	}
+	if mkdirErr := os.MkdirAll(subscriptionCacheDir, 0700); mkdirErr != nil {
+		return result, nil
+	}
+	data, _ := json.Marshal(cached{result.profiles, result.dns})
+	f, writeErr := os.CreateTemp(subscriptionCacheDir, ".subscription-*")
+	if writeErr == nil {
+		defer os.Remove(f.Name())
+		_, writeErr = f.Write(data)
+		closeErr := f.Close()
+		if writeErr == nil && closeErr == nil {
+			_ = os.Rename(f.Name(), path)
+		}
+	}
+	return result, nil
+}
+
+func fetchSubscriptionRemote(logger *slog.Logger, u *url.URL) (*subscriptionResult, error) {
+	logger.Info("fetching subscription", "host", u.Hostname())
+
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("invalid subscription request")
 	}
 	req.Header.Set("User-Agent", "v2rayNG/1.0")
 
 	start := time.Now()
-	resp, err := (&http.Client{Timeout: subscriptionTimeout}).Do(req)
+	resp, err := (&http.Client{Timeout: subscriptionTimeout, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+		if len(via) >= 5 || r.URL.Scheme != u.Scheme || r.URL.Host != u.Host {
+			return fmt.Errorf("subscription redirect rejected")
+		}
+		return nil
+	}}).Do(req)
 	if err != nil {
-		logger.Error("subscription fetch failed", "url", rawURL, "elapsed", time.Since(start), "err", err)
-		return nil, fmt.Errorf("fetch subscription: %w", err)
+		logger.Error("subscription fetch failed", "host", u.Hostname(), "elapsed", time.Since(start))
+		return nil, fmt.Errorf("subscription request failed (network, TLS, timeout, or rejected redirect)")
 	}
 	defer resp.Body.Close()
 
@@ -44,9 +113,12 @@ func fetchSubscription(logger *slog.Logger, rawURL string) (*subscriptionResult,
 		return nil, fmt.Errorf("subscription returned HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil {
 		return nil, fmt.Errorf("read subscription body: %w", err)
+	}
+	if len(body) > 1<<20 {
+		return nil, fmt.Errorf("subscription exceeds 1 MiB")
 	}
 	logger.Debug("subscription body", "bytes", len(body))
 
@@ -116,7 +188,7 @@ func parseSubscription(logger *slog.Logger, raw string) ([]Profile, []string, er
 	}
 
 	if skipped > 0 {
-		logger.Debug("subscription skipped non-proxy lines", "count", skipped)
+		logger.Warn("subscription skipped unsupported or non-proxy lines", "count", skipped)
 	}
 
 	if len(profiles) == 0 {

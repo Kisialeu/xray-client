@@ -10,13 +10,19 @@ import (
 	"time"
 )
 
-const pingTimeout = 60 * time.Second
+const pingTimeout = 5 * time.Second
 
+// PingResult is the TCP reachability and GeoIP result for one profile. A
+// LatencyMs value of -1 means the endpoint could not be parsed or reached.
 type PingResult struct {
-	Name      string `json:"name"`
-	LatencyMs int    `json:"latency_ms"`
-	Country   string `json:"country,omitempty"`
-	Flag      string `json:"flag,omitempty"`
+	// Name is the profile name.
+	Name string `json:"name"`
+	// LatencyMs is the TCP connection latency in milliseconds, or -1 on failure.
+	LatencyMs int `json:"latency_ms"`
+	// Country is the two-letter country code inferred for the endpoint.
+	Country string `json:"country,omitempty"`
+	// Flag is the Unicode regional-indicator flag for Country.
+	Flag string `json:"flag,omitempty"`
 }
 
 func pingProfiles(profiles []Profile) []PingResult {
@@ -36,14 +42,21 @@ func pingProfiles(profiles []Profile) []PingResult {
 	countries := resolveCountries(nonEmpty)
 
 	var wg sync.WaitGroup
+	limit := make(chan struct{}, 8)
 	for i, p := range profiles {
 		wg.Add(1)
 		go func(idx int, prof Profile) {
 			defer wg.Done()
+			limit <- struct{}{}
+			defer func() { <-limit }()
 			hp := hostports[idx]
 			results[idx] = PingResult{Name: prof.Name, LatencyMs: -1}
 
-			if cc := countries[hp]; cc != "" {
+			cc := countries[hp]
+			if cc == "" {
+				cc = profileCountryCode(prof)
+			}
+			if cc != "" {
 				results[idx].Country = cc
 				results[idx].Flag = countryFlag(cc)
 			}

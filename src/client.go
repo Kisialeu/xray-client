@@ -18,12 +18,12 @@ import (
 	"github.com/jackpal/gateway"
 
 	xapplog "github.com/xtls/xray-core/app/log"
-	xcommlog "github.com/xtls/xray-core/common/log"
 	xcommon "github.com/xtls/xray-core/common"
+	xcommlog "github.com/xtls/xray-core/common/log"
 )
 
 const (
-	disconnectTimeout  = 30 * time.Second
+	disconnectTimeout   = 30 * time.Second
 	inboundReadyTimeout = 5 * time.Second
 	inboundDialInterval = 20 * time.Millisecond
 )
@@ -31,21 +31,36 @@ const (
 var (
 	defaultTUNAddress = &net.IPNet{IP: net.IPv4(192, 18, 0, 1), Mask: net.IPv4Mask(255, 255, 255, 255)}
 
+	// DefaultRoutesToTUN contains the split-default routes used to send IPv4
+	// traffic through the TUN interface while leaving the proxy endpoint
+	// reachable through the original gateway.
 	DefaultRoutesToTUN = []*route.Addr{
 		route.MustParseAddr("0.0.0.0/1"),
 		route.MustParseAddr("128.0.0.0/1"),
 	}
 )
 
+// Config contains the tun2socks, routing, DNS, logging, and Xray settings
+// used to create a Client. Nil optional fields retain the defaults selected by
+// NewClient.
 type Config struct {
-	GatewayIP        *net.IP
-	InboundProxy     *Proxy
-	TUNAddress       *net.IPNet
-	RoutesToTUN      []*route.Addr
+	// GatewayIP is the host gateway used for the proxy endpoint exception route.
+	GatewayIP *net.IP
+	// InboundProxy is the local SOCKS5 endpoint exposed by the embedded Xray instance.
+	InboundProxy *Proxy
+	// TUNAddress is the address assigned to the packet tunnel interface.
+	TUNAddress *net.IPNet
+	// RoutesToTUN are the routes installed on the packet tunnel interface.
+	RoutesToTUN []*route.Addr
+	// TLSAllowInsecure is retained for configuration compatibility; insecure TLS
+	// is rejected when a connection is created.
 	TLSAllowInsecure bool
-	DNSServers       []string
-	Logger           *slog.Logger
-	XRayLogType      xapplog.LogType
+	// DNSServers are applied to the active macOS network service while connected.
+	DNSServers []string
+	// Logger receives client lifecycle and error messages.
+	Logger *slog.Logger
+	// XRayLogType controls the log destination used by the embedded Xray core.
+	XRayLogType xapplog.LogType
 }
 
 func (c *Config) apply(new *Config) {
@@ -67,16 +82,20 @@ func (c *Config) apply(new *Config) {
 	if new.DNSServers != nil {
 		c.DNSServers = new.DNSServers
 	}
+	c.TLSAllowInsecure = new.TLSAllowInsecure
 	if new.XRayLogType != xapplog.LogType_None {
 		c.XRayLogType = new.XRayLogType
 	}
 }
 
+// Client manages one Xray-backed TUN session at a time. A Client owns the
+// embedded Xray instance, packet tunnel, routes, DNS override, and traffic
+// counters for its current session.
 type Client struct {
 	cfg Config
 
-	mu     sync.Mutex
-	state  connState
+	mu    sync.Mutex
+	state connState
 
 	xInst   xcommon.Runnable
 	xSrvIP  *net.IPAddr
@@ -85,8 +104,8 @@ type Client struct {
 	pipe    pipeIface
 	routes  ipTable
 
-	tunIfaceName  string
-	tunRouteAdded bool
+	tunIfaceName   string
+	tunRouteAdded  bool
 	xrayRouteAdded bool
 	dnsState       *dnsOverride
 
@@ -101,15 +120,23 @@ const (
 	stateConnected
 )
 
+// Proxy identifies the local SOCKS5 endpoint used by the packet-to-SOCKS
+// bridge.
 type Proxy struct {
-	IP   net.IP
+	// IP is the endpoint address.
+	IP net.IP
+	// Port is the endpoint TCP port.
 	Port int
 }
 
+// String returns the proxy endpoint in host:port form.
 func (p *Proxy) String() string {
 	return fmt.Sprintf("%s:%d", p.IP, p.Port)
 }
 
+// NewClient creates an idle Client using the discovered default gateway, an
+// ephemeral localhost SOCKS port, the default TUN address, and split-default
+// IPv4 routes.
 func NewClient() (*Client, error) {
 	gatewayIP, err := gateway.DiscoverGateway()
 	if err != nil {
@@ -145,6 +172,8 @@ func NewClient() (*Client, error) {
 	}, nil
 }
 
+// NewClientWithOpts creates an idle Client and applies the non-zero settings
+// in cfg over the defaults created by NewClient.
 func NewClientWithOpts(cfg Config) (*Client, error) {
 	cl, err := NewClient()
 	if err != nil {
@@ -154,8 +183,13 @@ func NewClientWithOpts(cfg Config) (*Client, error) {
 	return cl, nil
 }
 
-func (c *Client) GatewayIP() net.IP   { return *c.cfg.GatewayIP }
-func (c *Client) TUNAddress() net.IP  { return c.cfg.TUNAddress.IP }
+// GatewayIP returns the gateway used for the proxy endpoint route exception.
+func (c *Client) GatewayIP() net.IP { return *c.cfg.GatewayIP }
+
+// TUNAddress returns the IP assigned to the packet tunnel interface.
+func (c *Client) TUNAddress() net.IP { return c.cfg.TUNAddress.IP }
+
+// InboundProxy returns the local SOCKS5 endpoint exposed by the Xray instance.
 func (c *Client) InboundProxy() Proxy { return *c.cfg.InboundProxy }
 
 // TunnelDone returns a channel that is closed (or receives an error) when the
@@ -213,6 +247,13 @@ func (c *Client) Connect(link string) error {
 		return fmt.Errorf("setup TUN device: %w", err)
 	}
 	c.tunIfaceName = ifaceName
+	if err := protectInterface(ifaceName); err != nil {
+		_ = c.routes.Delete(route.Opts{IfName: ifaceName, Routes: c.cfg.RoutesToTUN})
+		_ = tunnel.Close()
+		runRollback()
+		return fmt.Errorf("tunnel firewall: %w", err)
+	}
+	rollback = append(rollback, func() error { return protectInterface("") })
 	c.tunRouteAdded = true
 	rollback = append(rollback, func() error {
 		err := c.routes.Delete(route.Opts{IfName: c.tunIfaceName, Routes: c.cfg.RoutesToTUN})
@@ -234,6 +275,12 @@ func (c *Client) Connect(link string) error {
 
 	if len(c.cfg.DNSServers) > 0 {
 		c.dnsState = overrideDNS(c.cfg.DNSServers, c.cfg.Logger)
+		if c.dnsState == nil {
+			_ = c.routes.Delete(gwRoute)
+			c.xrayRouteAdded = false
+			runRollback()
+			return fmt.Errorf("DNS protection could not be configured")
+		}
 		rollback = append(rollback, func() error { c.dnsState.restore(c.cfg.Logger); return nil })
 	}
 
@@ -243,9 +290,11 @@ func (c *Client) Connect(link string) error {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
+	stopped := c.tunnelStopped
 	go func() {
+		defer close(stopped)
 		wg.Done()
-		c.tunnelStopped <- c.pipe.Copy(ctx, c.tunnel, c.cfg.InboundProxy.String())
+		stopped <- c.pipe.Copy(ctx, m, c.cfg.InboundProxy.String())
 	}()
 	wg.Wait()
 
@@ -289,10 +338,14 @@ func (c *Client) Disconnect(ctx context.Context) error {
 	c.mu.Unlock()
 
 	// Slow path — no lock held.
+	protectionErr := protectInterface("")
 	dnsState.restore(c.cfg.Logger)
 	stopFn()
 
 	var errs []error
+	if protectionErr != nil {
+		errs = append(errs, protectionErr)
+	}
 	if err := tunnel.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close tunnel: %w", err))
 	}
@@ -324,6 +377,8 @@ func (c *Client) Disconnect(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// BytesRead returns the number of bytes read from the current tunnel session.
+// It returns zero while the client is idle.
 func (c *Client) BytesRead() int {
 	if m := c.metrics.Load(); m != nil {
 		return m.BytesRead()
@@ -331,6 +386,8 @@ func (c *Client) BytesRead() int {
 	return 0
 }
 
+// BytesWritten returns the number of bytes written to the current tunnel
+// session. It returns zero while the client is idle.
 func (c *Client) BytesWritten() int {
 	if m := c.metrics.Load(); m != nil {
 		return m.BytesWritten()
@@ -343,20 +400,27 @@ func (c *Client) xrayToGatewayRoute() route.Opts {
 }
 
 func (c *Client) createXrayProxy(link string) (xcommon.Runnable, *net.IPAddr, error) {
+	if c.cfg.TLSAllowInsecure {
+		return nil, nil, fmt.Errorf("insecure TLS is not supported; use a trusted certificate")
+	}
+	_, address, _, _, err := buildOutbound(link)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid proxy profile")
+	}
+	ip, err := resolveEndpoint(address)
+	if err != nil {
+		return nil, nil, err
+	}
 	result, err := buildXrayInstance(
 		link,
 		c.cfg.InboundProxy.IP.String(),
 		c.cfg.InboundProxy.Port,
 		xRayLogLevel(c.cfg.Logger.Handler()),
 		c.cfg.XRayLogType,
+		ip.String(),
 	)
 	if err != nil {
 		return nil, nil, err
-	}
-
-	ip, err := net.ResolveIPAddr("ip", result.address)
-	if err != nil {
-		return nil, nil, fmt.Errorf("xray address not resolvable: %w", err)
 	}
 
 	return result.instance, ip, nil
@@ -425,4 +489,3 @@ func getFreePortSafe() (int, error) {
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
-

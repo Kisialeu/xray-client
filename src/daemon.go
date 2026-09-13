@@ -22,7 +22,12 @@ func runDaemon(
 	addr string,
 	reload reloadFunc,
 	dnsServers []string,
+	authToken string,
 ) {
+	if err := validateLoopback(addr); err != nil {
+		logger.Error("invalid daemon address", "err", err)
+		return
+	}
 	var mu sync.RWMutex
 	profiles := allProfiles
 
@@ -130,11 +135,12 @@ func runDaemon(
 		}
 		type profileEntry struct {
 			Name string `json:"name"`
+			Flag string `json:"flag,omitempty"`
 		}
 		cur := getProfiles()
 		entries := make([]profileEntry, len(cur))
 		for i, p := range cur {
-			entries[i] = profileEntry{Name: p.Name}
+			entries[i] = profileEntry{Name: p.Name, Flag: profileFlag(p)}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -232,6 +238,7 @@ func runDaemon(
 		}
 		mu.Lock()
 		profiles = updated
+		s.profiles.Store(&updated)
 		mu.Unlock()
 		logger.Info("profiles refreshed", "count", len(updated))
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "profiles": len(updated)})
@@ -239,7 +246,7 @@ func runDaemon(
 
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      controlHandler(mux, authToken),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 45 * time.Second,
 	}

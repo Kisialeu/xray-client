@@ -29,7 +29,7 @@ func TestDaemon_ServerInfo_NotConnected(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Get("http://" + addr + "/server-info")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/server-info")
 	if err != nil {
 		t.Fatalf("GET /server-info: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestDaemon_ServerInfo_MethodNotAllowed(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Post("http://"+addr+"/server-info", "application/json", nil)
+	resp, err := daemonTestHTTP.Post("http://"+addr+"/server-info", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /server-info: %v", err)
 	}

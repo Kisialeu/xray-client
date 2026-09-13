@@ -196,7 +196,7 @@ unlimited retries.
 
 ---
 
-## 7. Tray mode — `tray.go`
+## 7. Tray mode — `tray_darwin.go` and `tray_client_darwin.go`
 
 `systray.Run` owns the main thread, a macOS/Cocoa requirement. Three
 goroutine groups coordinate through a single **unbuffered** channel,
@@ -217,9 +217,10 @@ goroutine groups coordinate through a single **unbuffered** channel,
 | `config.go` | parses `--link` / `.txt` / `.yaml` into a `Profile` |
 | `metrics.go` | `readerMetrics` — wraps the TUN `io.ReadWriteCloser` to count bytes read/written |
 | `interfaces.go` | shared interface types (`pipeIface`, `ipTable`) used for testability |
-| `tray.go` | macOS menu bar UI and the connect/disconnect/switch controller |
-| `tray_darwin.go` / `tray_other.go` | build-tag split: real tray implementation on darwin, panic stub elsewhere |
-| `sudo_warn_darwin.go` / `sudo_warn_other.go` | platform-specific privilege check at startup |
+| `tray_darwin.go` | macOS menu bar UI and connect/disconnect/switch controller |
+| `tray_client_darwin.go` | HTTP client used by the user-level tray process |
+| `tray_darwin.go` | macOS menu bar UI implementation |
+| `sudo_warn_darwin.go` | macOS privilege warning at startup |
 | `pprof_debug.go` | opt-in, loopback-only `net/http/pprof` server, gated by the `XRAY_DEBUG_PPROF` environment variable |
 
 ---

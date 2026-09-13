@@ -15,7 +15,6 @@ import (
 	"github.com/getlantern/systray"
 )
 
-
 // ── icon cache - generated once at startup, never reallocated (issue 7) ───────
 
 var (
@@ -45,14 +44,14 @@ func iconDisc() []byte { return cachedIconDisc }
 //	─────────────────────────────
 //	Quit
 
-func runTray(ctx context.Context, cancel context.CancelFunc, logger *slog.Logger, s *state, initial Profile, profiles []Profile, maxReconnects int) {
+func runTray(ctx context.Context, cancel context.CancelFunc, logger *slog.Logger, s *state, initial Profile, profiles []Profile, maxReconnects int, dnsServers []string) {
 	systray.Run(
-		trayOnReady(ctx, cancel, logger, s, initial, profiles, maxReconnects),
+		trayOnReady(ctx, cancel, logger, s, initial, profiles, maxReconnects, dnsServers),
 		func() { cancel() },
 	)
 }
 
-func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slog.Logger, s *state, initial Profile, profiles []Profile, maxReconnects int) func() {
+func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slog.Logger, s *state, initial Profile, profiles []Profile, maxReconnects int, dnsServers []string) func() {
 	return func() {
 		systray.SetTemplateIcon(iconDisc(), iconDisc())
 		systray.SetTooltip("XRay VPN")
@@ -81,7 +80,11 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 		}
 		var profileItems []profileItem
 		for _, p := range profiles {
-			item := systray.AddMenuItem("    "+p.Name, p.Name)
+			title := "    " + p.Name
+			if flag := profileFlag(p); flag != "" {
+				title = "    " + flag + " " + p.Name
+			}
+			item := systray.AddMenuItem(title, p.Name)
 			profileItems = append(profileItems, profileItem{p, item})
 		}
 		systray.AddSeparator()
@@ -119,7 +122,7 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 				done = d
 				go func() {
 					defer close(d)
-					runWithReconnect(vpnCtx, logger, s, p, maxReconnects, nil)
+					runWithReconnect(vpnCtx, logger, s, p, maxReconnects, dnsServers)
 				}()
 			}
 
@@ -254,9 +257,17 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 						if pName != prevActiveName {
 							for _, pi := range profileItems {
 								if pi.profile.Name == pName {
-									pi.item.SetTitle("  ✓ " + pi.profile.Name)
+									title := "  ✓ " + pi.profile.Name
+									if flag := profileFlag(pi.profile); flag != "" {
+										title = "  ✓ " + flag + " " + pi.profile.Name
+									}
+									pi.item.SetTitle(title)
 								} else {
-									pi.item.SetTitle("    " + pi.profile.Name)
+									title := "    " + pi.profile.Name
+									if flag := profileFlag(pi.profile); flag != "" {
+										title = "    " + flag + " " + pi.profile.Name
+									}
+									pi.item.SetTitle(title)
 								}
 							}
 							prevActiveName = pName
@@ -277,7 +288,11 @@ func trayOnReady(ctx context.Context, rootCancel context.CancelFunc, logger *slo
 							mDisconnect.Hide()
 							mConnect.Show()
 							for _, pi := range profileItems {
-								pi.item.SetTitle("    " + pi.profile.Name)
+								title := "    " + pi.profile.Name
+								if flag := profileFlag(pi.profile); flag != "" {
+									title = "    " + flag + " " + pi.profile.Name
+								}
+								pi.item.SetTitle(title)
 							}
 							prevActiveName = ""
 						}

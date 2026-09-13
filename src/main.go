@@ -1,3 +1,5 @@
+// Package main implements the macOS xray-cli VPN client and its optional
+// daemon and menu-bar control surfaces.
 package main
 
 import (
@@ -7,9 +9,11 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -41,11 +45,15 @@ type state struct {
 	startAt       time.Time
 	connectedAt   atomic.Int64 // unix nano; 0 = not connected
 	activeProfile atomic.Pointer[Profile]
+	profiles      atomic.Pointer[[]Profile]
 }
 
 // ── status server (opt-in, --status) ─────────────────────────────────────────
 
 func startStatusServer(ctx context.Context, addr string, s *state) {
+	if validateLoopback(addr) != nil {
+		return
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		if s.connected.Load() {
@@ -122,8 +130,13 @@ func humanBytes(n float64) string {
 // ── reconnect loop ────────────────────────────────────────────────────────────
 
 // runWithReconnect connects profile and keeps it connected, retrying with
-// exponential backoff on failure, until ctx is cancelled or maxAttempts
-// consecutive failures are reached.
+// runWithReconnect owns the active Client for one profile and recreates it
+// after failed or unexpectedly terminated sessions. Recreating the Client is
+// intentional: gateway discovery, the local pipe, and all partial connection
+// resources must be renewed after a failed attempt.
+//
+// The retry loop uses exponential backoff on failure, until ctx is cancelled
+// or maxAttempts consecutive failures are reached.
 func runWithReconnect(
 	ctx context.Context,
 	logger *slog.Logger,
@@ -151,6 +164,14 @@ func runWithReconnect(
 		if err := vpn.Connect(profile.Link); err != nil {
 			logger.Error("connect failed", "attempt", attempt+1, "err", err)
 		} else {
+			if err := vpn.checkConnectivity(ctx); err != nil {
+				logger.Warn("proxy is not usable", "err", err)
+				dctx, cancel := context.WithTimeout(context.Background(), disconnectTimeout)
+				_ = vpn.Disconnect(dctx)
+				cancel()
+				vpn = nil
+				goto backoff
+			}
 			s.connected.Store(true)
 			s.connectedAt.Store(time.Now().UnixNano())
 			s.activeProfile.Store(&profile)
@@ -160,13 +181,14 @@ func runWithReconnect(
 			logger.Info("tunnel up", "profile", profile.Name)
 
 			metricsDone := make(chan struct{})
+			metricsCtx, stopMetrics := context.WithCancel(ctx)
 			go func() {
 				defer close(metricsDone)
 				t := time.NewTicker(metricsInterval)
 				defer t.Stop()
 				for {
 					select {
-					case <-ctx.Done():
+					case <-metricsCtx.Done():
 						return
 					case <-t.C:
 						s.bytesIn.Store(int64(vpn.BytesRead()))
@@ -175,22 +197,19 @@ func runWithReconnect(
 				}
 			}()
 
-			tunnelDone := vpn.TunnelDone()
-			select {
-			case <-ctx.Done():
-			case tunnelErr := <-tunnelDone:
-				if tunnelErr != nil {
-					logger.Error("tunnel dropped", "err", tunnelErr)
-				}
+			if err := vpn.monitorSession(ctx); err != nil && ctx.Err() == nil {
+				logger.Warn("proxy connectivity lost", "err", err)
 			}
 
 			s.connected.Store(false)
 			s.connectedAt.Store(0)
 			s.activeProfile.Store(nil)
+			stopMetrics()
 			dctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			_ = vpn.Disconnect(dctx)
 			cancel()
 			<-metricsDone
+			vpn = nil // Rediscover the gateway and rebuild the pipe on every attempt.
 
 			if ctx.Err() != nil {
 				return
@@ -202,6 +221,16 @@ func runWithReconnect(
 		if maxAttempts > 0 && attempt >= maxAttempts {
 			logger.Error("max reconnect attempts reached", "attempts", attempt)
 			return
+		}
+		if available := s.profiles.Load(); available != nil && len(*available) > 1 && attempt%2 == 0 {
+			for i, p := range *available {
+				if p.Link == profile.Link {
+					profile = (*available)[(i+1)%len(*available)]
+					vpn = nil
+					logger.Warn("trying alternate profile", "name", profile.Name)
+					break
+				}
+			}
 		}
 
 		delay := backoffDuration(attempt, defaultReconnectInitial, defaultReconnectMax)
@@ -257,10 +286,10 @@ FLAGS
                       GET /status  → JSON metrics
   --verbose         Log bandwidth stats every 10 s
   --log     <lvl>   Log level: debug|info|warn|error  (default: info)
-  --tray            macOS menu bar mode (default: on for darwin, off elsewhere)
+  --tray            macOS menu bar mode (default: on)
   --dns     <list>  Override DNS on connect (comma-separated, e.g. 1.1.1.1,8.8.8.8)
                       Routes DNS queries through the VPN tunnel. Restored on disconnect.
-  --tls-insecure    Allow self-signed TLS certificates
+  --tls-insecure    Request insecure TLS (rejected; trusted certificates required)
   --max-reconnects  Max reconnect attempts, 0 = unlimited (default: 0)
   --help            Show this help
 
@@ -316,6 +345,8 @@ func main() {
 	dnsFlag := fs.String("dns", "", "")
 	daemonAddr := fs.String("daemon-addr", "", "")
 	tray := fs.Bool("tray", defaultTray, "")
+	protect := fs.Bool("protect", false, "block direct traffic and IPv6 until explicitly released (macOS)")
+	release := fs.Bool("release-protection", false, "release this client's persistent firewall protection")
 	help := fs.Bool("help", false, "")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -325,6 +356,27 @@ func main() {
 	if *help {
 		fmt.Print(helpText)
 		return
+	}
+	if *release {
+		lock, err := acquireSessionLock()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer lock.Close()
+		if err := releaseProtection(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	for _, addr := range []string{*daemonAddr, *statusAddr} {
+		if addr != "" {
+			if err := validateLoopback(addr); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return
+			}
+		}
 	}
 
 	// Check if --tray was explicitly passed (vs darwin default).
@@ -349,6 +401,9 @@ func main() {
 	warnIfNotRoot(*tray)
 
 	logger := buildLogger(*logLevel)
+	if cacheRoot, err := os.UserCacheDir(); err == nil {
+		subscriptionCacheDir = filepath.Join(cacheRoot, "xray-cli-private")
+	}
 
 	if *link == "" {
 		*link = strings.TrimSpace(os.Getenv("XRAY_LINK"))
@@ -392,6 +447,12 @@ func main() {
 		allProfiles []Profile
 		subDNS      []string
 	)
+	lock, err := acquireSessionLock()
+	if err != nil {
+		logger.Error("cannot acquire VPN session", "err", err)
+		return
+	}
+	defer lock.Close()
 
 	switch {
 	case *subscribeURL != "":
@@ -459,8 +520,35 @@ func main() {
 	if len(allProfiles) == 0 {
 		allProfiles = []Profile{profile}
 	}
+	if err := validateProfiles(allProfiles); err != nil {
+		logger.Error("profile validation failed", "err", err)
+		return
+	}
+	s.profiles.Store(&allProfiles)
+	if *protect {
+		var endpoints []string
+		for _, p := range allProfiles {
+			_, host, port, _, err := buildOutbound(p.Link)
+			if err != nil {
+				logger.Error("invalid protected profile", "name", p.Name)
+				return
+			}
+			ip, err := resolveEndpoint(host)
+			if err != nil {
+				logger.Error("cannot resolve protected endpoint", "name", p.Name, "err", err)
+				return
+			}
+			endpoints = append(endpoints, net.JoinHostPort(ip.String(), port))
+			pinnedEndpoints.Store(host, ip.IP)
+		}
+		if err := beginProtection(endpoints); err != nil {
+			logger.Error("firewall protection failed", "err", err)
+			return
+		}
+		logger.Warn("protected mode active; direct connectivity stays blocked until --release-protection; existing PF states were cleared")
+	}
 
-	if last := loadLastProfile(); last != "" {
+	if last := loadLastProfile(); last != "" && *profileName == "" {
 		if p, ok := findProfile(allProfiles, last); ok {
 			profile = p
 		}
@@ -502,7 +590,12 @@ func main() {
 				return all, nil
 			}
 		}
-		runDaemon(ctx, logger, s, profile, allProfiles, *maxReconnects, *daemonAddr, reload, dnsServers)
+		token, err := createControlToken(controlTokenPath)
+		if err != nil {
+			logger.Error("control token unavailable; run setup-macos.sh install", "err", err)
+			return
+		}
+		runDaemon(ctx, logger, s, profile, allProfiles, *maxReconnects, *daemonAddr, reload, dnsServers, token)
 		return
 	}
 
@@ -512,7 +605,7 @@ func main() {
 	}
 
 	if *tray {
-		runTray(ctx, stop, logger, s, profile, allProfiles, *maxReconnects)
+		runTray(ctx, stop, logger, s, profile, allProfiles, *maxReconnects, dnsServers)
 		return
 	}
 

@@ -118,7 +118,7 @@ func TestDaemon_Ping(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Get("http://" + addr + "/ping")
+	resp, err := daemonTestHTTP.Get("http://" + addr + "/ping")
 	if err != nil {
 		t.Fatalf("GET /ping: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDaemon_Ping_MethodNotAllowed(t *testing.T) {
 	addr, _, cancel := startTestDaemon(t)
 	defer cancel()
 
-	resp, err := http.Post("http://"+addr+"/ping", "application/json", nil)
+	resp, err := daemonTestHTTP.Post("http://"+addr+"/ping", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /ping: %v", err)
 	}
