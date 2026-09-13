@@ -57,6 +57,7 @@ type daemonProfiles struct {
 type daemonSettingsUpdater struct {
 	mu      sync.Mutex
 	current *atomic.Value
+	version uint64
 	update  func(connectionSettingsPatch) (ConnectionSettings, error)
 }
 
@@ -85,7 +86,32 @@ func (u *daemonSettingsUpdater) toggle(value func(ConnectionSettings) bool, set 
 		return err
 	}
 	u.current.Store(updated)
+	u.version++
 	return nil
+}
+
+func (u *daemonSettingsUpdater) set(settings ConnectionSettings) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.current.Store(settings)
+	u.version++
+}
+
+func (u *daemonSettingsUpdater) versionAtStart() uint64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.version
+}
+
+func (u *daemonSettingsUpdater) setIfVersion(version uint64, settings ConnectionSettings) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.version != version {
+		return false
+	}
+	u.current.Store(settings)
+	u.version++
+	return true
 }
 
 func (dc *daemonClient) request(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
@@ -399,7 +425,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 					selectedProfile.Store(profs.Profiles[0].Name)
 				}
 				if settings, err := dc.settings(ctx); err == nil {
-					currentSettings.Store(ConnectionSettings{AutoConnect: settings.AutoConnect, AutoReconnect: settings.AutoReconnect})
+					settingsUpdater.set(ConnectionSettings{AutoConnect: settings.AutoConnect, AutoReconnect: settings.AutoReconnect})
 				}
 
 				// Ping servers in background to show latency
@@ -603,6 +629,7 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 						case <-ctx.Done():
 							return
 						case <-t.C:
+							settingsVersion := settingsUpdater.versionAtStart()
 							st, err := dc.status(ctx)
 							if err != nil {
 								if daemonOnline {
@@ -622,9 +649,10 @@ func trayClientOnReady(ctx context.Context, rootCancel context.CancelFunc, logge
 							daemonOnline = true
 							if settings, settingsErr := dc.settings(ctx); settingsErr == nil {
 								value := ConnectionSettings{AutoConnect: settings.AutoConnect, AutoReconnect: settings.AutoReconnect}
-								currentSettings.Store(value)
-								setSettingTitle(mAutoConnect, "Auto-connect", value.AutoConnect)
-								setSettingTitle(mAutoReconnect, "Auto-reconnect", value.AutoReconnect)
+								if settingsUpdater.setIfVersion(settingsVersion, value) {
+									setSettingTitle(mAutoConnect, "Auto-connect", value.AutoConnect)
+									setSettingTitle(mAutoReconnect, "Auto-reconnect", value.AutoReconnect)
+								}
 							}
 
 							rxRate := float64(st.BytesIn-prevIn) / metricsInterval.Seconds()

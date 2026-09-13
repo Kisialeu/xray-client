@@ -34,6 +34,27 @@ func TestDaemonSettingsUpdaterSerializesRapidToggles(t *testing.T) {
 	}
 }
 
+func TestDaemonSettingsUpdaterRejectsStalePoll(t *testing.T) {
+	var current atomic.Value
+	current.Store(defaultConnectionSettings())
+	settings := newConnectionSettingsState(defaultConnectionSettings())
+	updater := &daemonSettingsUpdater{
+		current: &current,
+		update:  settings.update,
+	}
+
+	version := updater.versionAtStart()
+	if err := updater.toggleAutoReconnect(); err != nil {
+		t.Fatal(err)
+	}
+	if updater.setIfVersion(version, defaultConnectionSettings()) {
+		t.Fatal("stale polling response was accepted")
+	}
+	if got := current.Load().(ConnectionSettings); got.AutoReconnect {
+		t.Fatal("stale polling response overwrote the toggled setting")
+	}
+}
+
 func TestDefaultConnectionSettings(t *testing.T) {
 	got := defaultConnectionSettings()
 	if !got.AutoConnect || !got.AutoReconnect {
